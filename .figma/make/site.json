@@ -1,0 +1,10 @@
+{
+  "description": "EduAlerta empowers educators and students by utilizing AI and data analytics to prevent school dropout, transforming data into actionable knowledge and opportunities.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

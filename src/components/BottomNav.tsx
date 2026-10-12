@@ -1,4 +1,6 @@
+
 import { useNavigate, useLocation } from 'react-router-dom'
+
 import {
   HomeIcon,
   StudentsIcon,
@@ -8,25 +10,79 @@ import {
   ProgressIcon,
   OrientationIcon,
 } from './icons'
+
 import { COLORS, FONT } from '../theme'
-import type { ReactNode } from 'react'
 
-type NavItem = { id: string; label: string; path: string; icon: (p: { active?: boolean }) => React.ReactNode }
+// Estructura común de cada elemento de navegación.
+type NavItem = {
+  id: string
+  label: string
+  path: string
+  icon: (p: { active?: boolean }) => React.ReactNode
+}
 
+// Opciones del menú de docente, orientador y administrador.
+// Se conservan las rutas que ya utilizaba el proyecto.
 const BASE_NAV: NavItem[] = [
-  { id: 'inicio', label: 'Inicio', path: '/app/home', icon: HomeIcon },
-  { id: 'estudiantes', label: 'Estudiantes', path: '/app/estudiantes', icon: StudentsIcon },
-  { id: 'alertas', label: 'Alertas', path: '/app/alertas', icon: AlertIcon },
-  { id: 'analitica', label: 'Analítica', path: '/app/analitica', icon: AnalyticsIcon },
-  { id: 'perfil', label: 'Perfil', path: '/app/perfil', icon: ProfileIcon },
+  {
+    id: 'inicio',
+    label: 'Inicio',
+    path: '/app/home',
+    icon: HomeIcon,
+  },
+  {
+    id: 'estudiantes',
+    label: 'Estudiantes',
+    path: '/app/estudiantes',
+    icon: StudentsIcon,
+  },
+  {
+    id: 'alertas',
+    label: 'Alertas',
+    path: '/app/alertas',
+    icon: AlertIcon,
+  },
+  {
+    id: 'analitica',
+    label: 'Analítica',
+    path: '/app/analitica',
+    icon: AnalyticsIcon,
+  },
+  {
+    id: 'perfil',
+    label: 'Perfil',
+    path: '/app/perfil',
+    icon: ProfileIcon,
+  },
 ]
 
+// El estudiante solo ve opciones que corresponden al flujo actual.
+// Se elimina el enlace de alertas del docente y se añade un inicio propio.
 const STUDENT_NAV: NavItem[] = [
-  { id: 'inicio', label: 'Inicio', path: '/app/home', icon: HomeIcon },
-  { id: 'progreso', label: 'Progreso', path: '/app/progreso', icon: ProgressIcon },
-  { id: 'alertas', label: 'Alertas', path: '/app/alertas', icon: AlertIcon },
-  { id: 'orientacion', label: 'Orientación', path: '/app/orientacion', icon: OrientationIcon },
-  { id: 'perfil', label: 'Perfil', path: '/app/perfil', icon: ProfileIcon },
+  {
+    id: 'inicio',
+    label: 'Inicio',
+    path: '/app/home-estudiante',
+    icon: HomeIcon,
+  },
+  {
+    id: 'resultados',
+    label: 'Resultados',
+    path: '/app/orientacion/resultados',
+    icon: ProgressIcon,
+  },
+  {
+    id: 'orientacion',
+    label: 'Orientación',
+    path: '/app/orientacion',
+    icon: OrientationIcon,
+  },
+  {
+    id: 'perfil',
+    label: 'Perfil',
+    path: '/app/perfil',
+    icon: ProfileIcon,
+  },
 ]
 
 interface Props {
@@ -36,68 +92,53 @@ interface Props {
 export default function BottomNav({ role = 'docente' }: Props) {
   const navigate = useNavigate()
   const { pathname } = useLocation()
-  const items = role === 'estudiante' ? STUDENT_NAV : BASE_NAV
+
+  // Cada rol obtiene su propio conjunto de opciones.
+  const isStudent = role === 'estudiante'
+  const items = isStudent ? STUDENT_NAV : BASE_NAV
 
   return (
-    <div
+    <nav
+      aria-label="Navegación principal"
+      className="ea-navigation"
       style={{
-        background: COLORS.card,
-        borderTop: `1px solid #F1F5F9`,
-        padding: '8px 0 18px',
-        display: 'flex',
-        alignItems: 'flex-start',
-        justifyContent: 'space-around',
-        flexShrink: 0,
-        boxShadow: '0 -4px 16px rgba(15,23,42,0.05)',
-        fontFamily: FONT,
-      }}
+        '--nav-background': COLORS.card,
+        '--nav-border': '#F1F5F9',
+        '--nav-font': FONT,
+      } as React.CSSProperties}
     >
       {items.map((item) => {
-        const active = pathname === item.path
+        // En el menú de estudiante, "Orientación" también está activo
+        // dentro del test, pero no cuando se consultan los resultados.
+        const active = isStudent
+          ? pathname === item.path ||
+            (item.id === 'orientacion' &&
+              pathname === '/app/orientacion/test')
+          : pathname === item.path ||
+            (item.path !== '/app/home' &&
+              pathname.startsWith(`${item.path}/`))
+
         const Icon = item.icon
+
         return (
           <button
             key={item.id}
+            type="button"
             onClick={() => navigate(item.path)}
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: 3,
-              background: 'transparent',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '4px 10px',
-              borderRadius: 10,
-              minWidth: 56,
-            }}
+            aria-current={active ? 'page' : undefined}
+            className={`ea-navigation__item${active ? ' is-active' : ''}`}
           >
-            <div
-              style={{
-                width: 32,
-                height: 32,
-                borderRadius: 10,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                background: active ? COLORS.lightBlue : 'transparent',
-              }}
-            >
+            {/* El icono refleja el estado activo de la opción. */}
+            <span className="ea-navigation__icon">
               <Icon active={active} />
-            </div>
-            <span
-              style={{
-                fontWeight: active ? 600 : 400,
-                fontSize: 10,
-                color: active ? COLORS.blue : COLORS.subtle,
-                lineHeight: 1,
-              }}
-            >
+            </span>
+
+            <span className="ea-navigation__label">
               {item.label}
             </span>
           </button>
         )
       })}
-    </div>
+    </nav>
   )
 }

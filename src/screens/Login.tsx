@@ -74,7 +74,7 @@ export default function Login() {
               }}
             >
               <span style={{ color: '#FFFFFF', fontWeight: 700, fontSize: 22 }}>
-                E
+                <img src="../../../images/favicon.svg" alt="Favicon" style={{ width: 32, height: 32 }} />
               </span>
             </div>
             <div style={{ fontSize: 18, fontWeight: 700, color: COLORS.navy }}>

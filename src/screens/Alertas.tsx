@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type For
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
 import RiskBadge from '../components/RiskBadge'
+import { SearchIcon } from '../components/icons'
 import { alertasApiService, type AlertFollowUp, type AlertStatus, type ApiAlert } from '../services/alertas-api.service'
 import { studentsApiService, type ApiStudent, type RiskLevel } from '../services/students-api.service'
 import { getCurrentAuthUser } from '../services/auth.service'
@@ -10,8 +11,20 @@ import { ApiClientError } from '../services/api-client.service'
 import { COLORS } from '../theme'
 import type { Risk, Role } from '../types'
 
-type AlertFilter = 'Todas' | 'Prioritarias' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin evaluar'
-const FILTERS: AlertFilter[] = ['Todas', 'Prioritarias', 'Riesgo alto', 'Riesgo medio', 'Riesgo bajo', 'Sin evaluar']
+type RiskFilter = 'Todas' | 'Prioritarias' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin evaluar'
+type StatusFilter = 'Todos' | AlertStatus
+type GradeFilter = 'Todos' | '10°' | '11°' | 'Otros'
+
+const RISK_FILTERS: RiskFilter[] = [
+  'Todas', 'Prioritarias', 'Riesgo alto', 'Riesgo medio', 'Riesgo bajo', 'Sin evaluar',
+]
+const STATUS_FILTERS: StatusFilter[] = ['Todos', 'Nueva', 'En seguimiento', 'Revisada']
+const GRADE_FILTERS: { value: GradeFilter; label: string }[] = [
+  { value: 'Todos', label: 'Todos los grados' },
+  { value: '10°', label: 'Décimo (10°)' },
+  { value: '11°', label: 'Once (11°)' },
+  { value: 'Otros', label: 'Otros / sin grado' },
+]
 const STATUS_OPTIONS: AlertStatus[] = ['Nueva', 'En seguimiento', 'Revisada']
 const RISK_LABELS: Record<RiskLevel, string> = {
   bajo: 'Riesgo bajo', medio: 'Riesgo medio', alto: 'Riesgo alto', sin_evaluar: 'Sin evaluar',
@@ -40,13 +53,35 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
+/** Normaliza texto para que la búsqueda no dependa de tildes o mayúsculas. */
+function normalizeText(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLocaleLowerCase('es')
+    .trim()
+}
+
+/** Agrupa los formatos habituales del grado en las opciones del filtro. */
+function normalizeGrade(value: string | null): Exclude<GradeFilter, 'Todos'> {
+  const normalized = normalizeText(value ?? '')
+  const number = normalized.match(/\d+/)?.[0]
+
+  if (number === '10' || /\bdecim[oa]\b/.test(normalized)) return '10°'
+  if (number === '11' || /\bonce\b|\bundecim[oa]\b/.test(normalized)) return '11°'
+  return 'Otros'
+}
+
 export default function Alertas() {
   const [alerts, setAlerts] = useState<ApiAlert[]>([])
   const [students, setStudents] = useState<ApiStudent[]>([])
   const [loading, setLoading] = useState(true)
   const [pageError, setPageError] = useState('')
   const [notice, setNotice] = useState('')
-  const [activeFilter, setActiveFilter] = useState<AlertFilter>('Todas')
+  const [search, setSearch] = useState('')
+  const [activeFilter, setActiveFilter] = useState<RiskFilter>('Todas')
+  const [activeStatusFilter, setActiveStatusFilter] = useState<StatusFilter>('Todos')
+  const [activeGradeFilter, setActiveGradeFilter] = useState<GradeFilter>('Todos')
   const [formOpen, setFormOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -82,13 +117,45 @@ export default function Alertas() {
 
   useEffect(() => { void loadData() }, [loadData])
 
-  const filteredAlerts = useMemo(() => alerts.filter((alert) => {
-    if (activeFilter === 'Todas') return true
-    if (activeFilter === 'Prioritarias' || activeFilter === 'Riesgo alto') return alert.nivelRiesgo === 'alto'
-    if (activeFilter === 'Riesgo medio') return alert.nivelRiesgo === 'medio'
-    if (activeFilter === 'Riesgo bajo') return alert.nivelRiesgo === 'bajo'
-    return alert.nivelRiesgo === 'sin_evaluar'
-  }), [alerts, activeFilter])
+  /** Los cuatro criterios se combinan: una alerta debe cumplirlos todos. */
+  const filteredAlerts = useMemo(() => {
+    const query = normalizeText(search)
+
+    return alerts.filter((alert) => {
+      const matchesRisk =
+        activeFilter === 'Todas' ||
+        ((activeFilter === 'Prioritarias' || activeFilter === 'Riesgo alto') && alert.nivelRiesgo === 'alto') ||
+        (activeFilter === 'Riesgo medio' && alert.nivelRiesgo === 'medio') ||
+        (activeFilter === 'Riesgo bajo' && alert.nivelRiesgo === 'bajo') ||
+        (activeFilter === 'Sin evaluar' && alert.nivelRiesgo === 'sin_evaluar')
+
+      const matchesStatus = activeStatusFilter === 'Todos' || alert.estado === activeStatusFilter
+      const matchesGrade = activeGradeFilter === 'Todos' || normalizeGrade(alert.grado) === activeGradeFilter
+
+      const searchableText = normalizeText([
+        alert.nombreEstudiante,
+        alert.codigoEstudiantil,
+        alert.senal,
+        alert.grado ?? '',
+        alert.estado,
+        alert.nivelRiesgo,
+      ].join(' '))
+      const matchesSearch = !query || searchableText.includes(query)
+
+      return matchesRisk && matchesStatus && matchesGrade && matchesSearch
+    })
+  }, [alerts, activeFilter, activeStatusFilter, activeGradeFilter, search])
+
+  const hasActiveFilters =
+    Boolean(search.trim()) || activeFilter !== 'Todas' ||
+    activeStatusFilter !== 'Todos' || activeGradeFilter !== 'Todos'
+
+  const clearFilters = () => {
+    setSearch('')
+    setActiveFilter('Todas')
+    setActiveStatusFilter('Todos')
+    setActiveGradeFilter('Todos')
+  }
 
   const openCreateForm = () => {
     setFormError(''); setNotice(''); setPageError('')
@@ -203,7 +270,7 @@ export default function Alertas() {
                   <span style={{ width: 3, height: 22, background: COLORS.teal, borderRadius: 2 }} />
                   <h1 style={{ color: '#FFFFFF', fontSize: 22, fontWeight: 700, margin: 0 }}>Alertas tempranas</h1>
                 </div>
-                <p style={{ color: '#CBD5E1', fontSize: 12, margin: '0 0 0 11px', lineHeight: 1.5 }}>Señales, riesgo y seguimiento registrados</p>
+                <p style={{ color: '#CBD5E1', fontSize: 12, margin: '0 0 0 11px', lineHeight: 1.5 }}>Señales, riesgo y seguimiento registrados en SQL</p>
               </div>
               <button type="button" onClick={openCreateForm} style={{ ...primaryButton, flexShrink: 0 }}>+ Nueva alerta</button>
             </div>
@@ -218,15 +285,53 @@ export default function Alertas() {
             {pageError && <div role="alert" style={{ background: '#FEF2F2', color: '#991B1B', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}><p style={{ margin: '0 0 8px' }}>{pageError}</p><button type="button" onClick={() => void loadData()} style={secondaryButton}>Reintentar</button></div>}
             {notice && <div role="status" style={{ background: '#F0FDF4', color: '#166534', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{notice}</div>}
 
-            <div className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12 }}>
-              {FILTERS.map((filter) => {
-                const active = activeFilter === filter
-                return <button key={filter} type="button" onClick={() => setActiveFilter(filter)} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#FFFFFF', color: active ? '#FFFFFF' : '#475569', border: active ? `1px solid ${COLORS.blue}` : `1px solid ${COLORS.border}`, borderRadius: 20, padding: '7px 13px', fontSize: 12, fontWeight: active ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{filter}</button>
-              })}
+            {/* Búsqueda por estudiante, código, señal o atributos de la alerta. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: '10px 13px', marginBottom: 16 }}>
+              <SearchIcon size={18} color={COLORS.subtle} />
+              <input
+                type="search"
+                aria-label="Buscar alertas por estudiante, código o señal"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Buscar estudiante, código o señal..."
+                style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', color: COLORS.navy, fontSize: 13 }}
+              />
+              {search && <button type="button" aria-label="Limpiar búsqueda" onClick={() => setSearch('')} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 18, cursor: 'pointer' }}>×</button>}
+            </div>
+
+            {/* Filtro de riesgo: conserva todos los niveles del sistema. */}
+            <div style={{ marginBottom: 13 }}>
+              <p style={{ fontSize: 11, fontWeight: 700, color: COLORS.muted, margin: '0 0 7px' }}>Nivel de riesgo</p>
+              <div className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
+                {RISK_FILTERS.map((filter) => {
+                  const active = activeFilter === filter
+                  return <button key={filter} type="button" onClick={() => setActiveFilter(filter)} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#FFFFFF', color: active ? '#FFFFFF' : '#475569', border: active ? `1px solid ${COLORS.blue}` : `1px solid ${COLORS.border}`, borderRadius: 20, padding: '7px 13px', fontSize: 12, fontWeight: active ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{filter}</button>
+                })}
+              </div>
+            </div>
+
+            {/* Filtros de estado y grado para revisar un subconjunto concreto. */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label htmlFor="alert-status-filter" style={{ display: 'block', fontSize: 11, fontWeight: 700, color: COLORS.muted, marginBottom: 6 }}>Estado de la alerta</label>
+                <select id="alert-status-filter" value={activeStatusFilter} onChange={(event) => setActiveStatusFilter(event.target.value as StatusFilter)} style={{ ...fieldStyle, minHeight: 40 }}>
+                  {STATUS_FILTERS.map((status) => <option key={status} value={status}>{status === 'Todos' ? 'Todos los estados' : status}</option>)}
+                </select>
+              </div>
+              <div>
+                <label htmlFor="alert-grade-filter" style={{ display: 'block', fontSize: 11, fontWeight: 700, color: COLORS.muted, marginBottom: 6 }}>Curso o grado</label>
+                <select id="alert-grade-filter" value={activeGradeFilter} onChange={(event) => setActiveGradeFilter(event.target.value as GradeFilter)} style={{ ...fieldStyle, minHeight: 40 }}>
+                  {GRADE_FILTERS.map((grade) => <option key={grade.value} value={grade.value}>{grade.label}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+              {!loading && <p style={{ fontSize: 12, color: COLORS.subtle, margin: 0 }}>{filteredAlerts.length} de {alerts.length} {alerts.length === 1 ? 'alerta' : 'alertas'} · ordenadas por fecha de creación</p>}
+              {hasActiveFilters && <button type="button" onClick={clearFilters} style={{ ...secondaryButton, padding: '7px 10px' }}>Limpiar filtros</button>}
             </div>
 
             {loading && <p role="status" style={{ padding: 24, textAlign: 'center', color: COLORS.muted }}>Cargando alertas desde PostgreSQL...</p>}
-            {!loading && <p style={{ fontSize: 12, color: COLORS.subtle, margin: '4px 0 12px' }}>{filteredAlerts.length} {filteredAlerts.length === 1 ? 'alerta' : 'alertas'} · ordenadas por fecha de creación</p>}
             {!loading && !pageError && filteredAlerts.length === 0 && <div style={{ padding: 24, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 14 }}><strong style={{ color: COLORS.navy, fontSize: 14 }}>No hay alertas para este filtro</strong><p style={{ color: COLORS.muted, fontSize: 12 }}>Puedes registrar una señal nueva con el botón «Nueva alerta».</p></div>}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>

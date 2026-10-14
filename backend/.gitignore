@@ -1,0 +1,12 @@
+# Secretos locales: conservar solo .env.example en Git.
+.env
+.env.*
+!.env.example
+
+# Compilación y herramientas.
+target/
+*.class
+.idea/
+.vscode/
+*.iml
+.DS_Store

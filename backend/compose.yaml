@@ -1,0 +1,48 @@
+services:
+  # PostgreSQL relacional; el volumen conserva la información local.
+  db:
+    image: postgres:16-alpine
+    container_name: edualerta-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-edualerta}
+      POSTGRES_USER: ${DB_USERNAME:-edualerta_app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?Configura DB_PASSWORD en .env}
+    ports:
+      - "5432:5432"
+    volumes:
+      - edualerta_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-edualerta_app} -d ${DB_NAME:-edualerta}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Spring Boot y Maven se ejecutan dentro del contenedor; no requieren instalación local.
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: edualerta-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      DB_NAME: ${DB_NAME:-edualerta}
+      DB_URL: jdbc:postgresql://db:5432/${DB_NAME:-edualerta}
+      DB_USERNAME: ${DB_USERNAME:-edualerta_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Configura DB_PASSWORD en .env}
+      JWT_SECRET: ${JWT_SECRET:?Agrega JWT_SECRET a backend/.env}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-28800}
+      BOOTSTRAP_ADMIN_ENABLED: ${BOOTSTRAP_ADMIN_ENABLED:-true}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@edualerta.local}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Agrega BOOTSTRAP_ADMIN_PASSWORD a backend/.env}
+      BOOTSTRAP_ADMIN_NOMBRES: ${BOOTSTRAP_ADMIN_NOMBRES:-Administrador}
+      BOOTSTRAP_ADMIN_APELLIDOS: ${BOOTSTRAP_ADMIN_APELLIDOS:-EduAlerta}
+    ports:
+      - "8080:8080"
+
+volumes:
+  edualerta_pgdata:

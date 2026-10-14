@@ -193,3 +193,46 @@ export function BatteryIcon() {
     </svg>
   )
 }
+
+
+/** Icono para editar la información de un perfil. */
+export function EditIcon({ size = 20, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size)} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" />
+    </svg>
+  )
+}
+
+/** Icono para preferencias y ajustes de la aplicación. */
+export function SettingsIcon({ size = 20, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size)} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="3" />
+      <path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.8-.7a8 8 0 0 1-1.7 1l-.3 1.9h-2.8l-.3-1.9a8 8 0 0 1-1.7-1l-1.8.7-1.4-2.4L7.1 15a8 8 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.8.7a8 8 0 0 1 1.7-1l.3-1.9h2.8l.3 1.9a8 8 0 0 1 1.7 1l1.8-.7 1.4 2.4-1.4 1.1a8 8 0 0 1-.1 2Z" />
+    </svg>
+  )
+}
+
+/** Icono para el centro de ayuda. */
+export function HelpIcon({ size = 20, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size)} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3" />
+      <path d="M12 17h.01" />
+    </svg>
+  )
+}
+
+/** Icono para cerrar la sesión actual. */
+export function LogOutIcon({ size = 20, color = 'currentColor' }: IconProps) {
+  return (
+    <svg {...base(size)} stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M10 17l5-5-5-5" />
+      <path d="M15 12H3" />
+      <path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6" />
+    </svg>
+  )
+}

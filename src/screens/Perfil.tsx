@@ -1,19 +1,29 @@
-
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
 import Card from '../components/Card'
-import { ChevronRight } from '../components/icons'
 import { COLORS } from '../theme'
+import type { ReactNode } from 'react'
 
+import {
+  ChevronRight,
+  ProfileIcon,
+  AlertIcon,
+  LockIcon,
+  InfoIcon,
+  EditIcon,
+  SettingsIcon,
+  HelpIcon,
+  LogOutIcon,
+} from '../components/icons'
 import type { Role } from '../types'
 import {
   readStoredData,
   removeStoredData,
 } from '../services/storage.service'
-
+import { logout, getCurrentAuthUser } from '../services/auth.service'
 // ============================================================
 // CONFIGURACIÓN DE LOS PERFILES DE DEMOSTRACIÓN
 // ============================================================
@@ -98,16 +108,28 @@ interface ProfileItem {
   onClick: () => void
 }
 
+
+/**
+ * Cada opción del perfil recibe su propio icono y colores.
+ * Así reutilizamos el componente sin repetir el diseño de las filas.
+ */
+type SectionItem = {
+  title: string
+  description: string
+  icon: ReactNode
+  iconColor: string
+  iconBg: string
+}
+
 function SectionGroup({
   title,
   items,
 }: {
   title: string
-  items: ProfileItem[]
+  items: SectionItem[]
 }) {
   return (
-    <section style={{ marginBottom: 18 }}>
-      {/* Título que agrupa opciones relacionadas del perfil. */}
+    <div style={{ marginBottom: 14 }}>
       <p
         style={{
           fontSize: 11,
@@ -115,7 +137,7 @@ function SectionGroup({
           color: COLORS.subtle,
           letterSpacing: '0.08em',
           textTransform: 'uppercase',
-          margin: '0 0 8px',
+          marginBottom: 8,
           paddingLeft: 4,
         }}
       >
@@ -127,38 +149,39 @@ function SectionGroup({
           <button
             key={item.title}
             type="button"
-            onClick={item.onClick}
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: 12,
               width: '100%',
-              boxSizing: 'border-box',
               padding: '13px 16px',
-
-              // El separador solo aparece entre las opciones del grupo.
-              border: 'none',
               borderBottom:
                 index < items.length - 1
                   ? '1px solid #F1F5F9'
                   : 'none',
-
               background: 'transparent',
+              border: 'none',
               cursor: 'pointer',
               textAlign: 'left',
             }}
           >
-            {/* Elemento visual común para mantener el diseño consistente. */}
+            {/* Contenedor visual con el icono correspondiente a la opción. */}
             <div
               aria-hidden="true"
               style={{
-                width: 36,
-                height: 36,
-                borderRadius: 10,
-                background: '#F1F5F9',
+                width: 38,
+                height: 38,
+                borderRadius: 11,
+                background: item.iconBg,
+                color: item.iconColor,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
                 flexShrink: 0,
               }}
-            />
+            >
+              {item.icon}
+            </div>
 
             <div style={{ flex: 1, minWidth: 0 }}>
               <p
@@ -176,8 +199,7 @@ function SectionGroup({
                 style={{
                   fontSize: 12,
                   color: COLORS.subtle,
-                  lineHeight: 1.5,
-                  margin: '3px 0 0',
+                  margin: '2px 0 0',
                 }}
               >
                 {item.description}
@@ -188,7 +210,7 @@ function SectionGroup({
           </button>
         ))}
       </Card>
-    </section>
+    </div>
   )
 }
 
@@ -198,6 +220,8 @@ function SectionGroup({
 
 export default function Perfil() {
   const navigate = useNavigate()
+  const currentUser = getCurrentAuthUser()
+  const user = getCurrentAuthUser()
 
   // Recupera el rol guardado al ingresar al modo de demostración.
   // Si no existe o es inválido, se utiliza docente como valor por defecto.
@@ -215,120 +239,43 @@ export default function Perfil() {
   const [notice, setNotice] = useState('')
 
   // Accesos disponibles según el rol actual.
-  // Solo se incluyen rutas que ya existen en el proyecto.
-  const roleItems: Record<Role, ProfileItem[]> = {
-    administrador: [
-      {
-        title: 'Estudiantes',
-        description: 'Consultar los registros disponibles',
-        onClick: () => navigate('/app/estudiantes'),
-      },
-      {
-        title: 'Alertas',
-        description: 'Consultar alertas y su estado',
-        onClick: () => navigate('/app/alertas'),
-      },
-      {
-        title: 'Analítica educativa',
-        description: 'Revisar los indicadores del sistema',
-        onClick: () => navigate('/app/analitica'),
-      },
-    ],
-
-    docente: [
-      {
-        title: 'Mis estudiantes',
-        description: 'Consultar estudiantes y sus fichas',
-        onClick: () => navigate('/app/estudiantes'),
-      },
-      {
-        title: 'Alertas y seguimientos',
-        description: 'Revisar casos y actuaciones registradas',
-        onClick: () => navigate('/app/alertas'),
-      },
-      {
-        title: 'Analítica educativa',
-        description: 'Consultar indicadores generales',
-        onClick: () => navigate('/app/analitica'),
-      },
-    ],
-
-    orientador: [
-      {
-        title: 'Estudiantes',
-        description: 'Consultar fichas para el acompañamiento',
-        onClick: () => navigate('/app/estudiantes'),
-      },
-      {
-        title: 'Alertas y seguimientos',
-        description: 'Revisar casos que requieren acompañamiento',
-        onClick: () => navigate('/app/alertas'),
-      },
-      {
-        title: 'Analítica educativa',
-        description: 'Consultar indicadores generales',
-        onClick: () => navigate('/app/analitica'),
-      },
-    ],
-
-    estudiante: [
-      {
-        title: 'Orientación vocacional',
-        description: 'Iniciar o continuar el test vocacional',
-        onClick: () => navigate('/app/orientacion'),
-      },
-      {
-        title: 'Mis resultados vocacionales',
-        description: 'Consultar los resultados guardados en este navegador',
-        onClick: () => navigate('/app/orientacion/resultados'),
-      },
-    ],
+  // Evita mostrar datos ficticios cuando no existe una sesión válida.
+  if (!user) {
+    return <Navigate to="/login" replace />
   }
 
-  // Las opciones de configuración muestran un aviso honesto mientras
-  // no estén conectadas a servicios reales.
-  const configurationItems: ProfileItem[] = [
-    {
-      title: 'Información personal',
-      description: 'Datos de identificación y contacto',
-      onClick: () =>
-        setNotice(
-          'La edición de los datos personales estará disponible cuando se implemente el servicio de usuarios.',
-        ),
-    },
-    {
-      title: 'Editar perfil',
-      description: 'Actualizar nombre y datos visibles',
-      onClick: () =>
-        setNotice(
-          'La edición del perfil todavía no está implementada en esta versión.',
-        ),
-    },
-    {
-      title: 'Notificaciones',
-      description: 'Alertas, avisos y recordatorios',
-      onClick: () =>
-        setNotice(
-          'Las preferencias de notificaciones están pendientes de implementación.',
-        ),
-    },
-    {
-      title: 'Preferencias',
-      description: 'Idioma, apariencia y accesibilidad',
-      onClick: () =>
-        setNotice(
-          'La configuración de preferencias todavía no está conectada.',
-        ),
-    },
-    {
-      title: 'Seguridad',
-      description: 'Opciones de acceso y contraseña',
-      onClick: () =>
-        setNotice(
-          'La gestión de contraseñas requiere autenticación real y aún no está disponible.',
-        ),
-    },
-  ]
+  const fullName = `${user.nombres} ${user.apellidos}`.trim()
+  const initials =
+    `${user.nombres.trim().charAt(0)}${user.apellidos.trim().charAt(0)}`.toUpperCase() || 'EA'
+
+  const roleLabels = {
+    administrador: 'Administrador',
+    docente: 'Docente',
+    orientador: 'Orientador escolar',
+    estudiante: 'Estudiante',
+  }
+
+  {/* Solo el administrador puede ver el acceso de gestión de cuentas. */}
+  {currentUser?.rol === 'administrador' && (
+    <button
+      type="button"
+      onClick={() => navigate('/app/admin/usuarios')}
+      style={{
+        width: '100%',
+        marginBottom: 14,
+        padding: '14px 16px',
+        borderRadius: 12,
+        border: '1px solid #BFDBFE',
+        background: '#EFF6FF',
+        color: '#1D4ED8',
+        fontWeight: 600,
+        textAlign: 'left',
+        cursor: 'pointer',
+      }}
+    >
+      Administración de usuarios →
+    </button>
+  )}
 
   const helpItems: ProfileItem[] = [
     {
@@ -349,16 +296,8 @@ export default function Perfil() {
     },
   ]
 
-  // Cierra el modo de demostración y vuelve a Login.
-  // No elimina los resultados vocacionales ni los datos de estudiantes
-  // y alertas, porque pertenecen al almacenamiento del proyecto.
-  function handleLogout() {
-    removeStoredData('demo-role')
-    removeStoredData('demo-email')
-    // Elimina el estudiante seleccionado para evitar arrastrar su contexto
-    // cuando otra persona entre al prototipo en el mismo navegador.
-    removeStoredData('demo-student-id')
-
+  const handleLogout = () => {
+    logout()
     navigate('/login', { replace: true })
   }
 
@@ -537,28 +476,72 @@ export default function Perfil() {
 
               {/* Acciones propias del rol actual. */}
               <SectionGroup
-                title={
-                  role === 'estudiante'
-                    ? 'Mi orientación'
-                    : role === 'orientador'
-                      ? 'Acompañamiento'
-                      : role === 'administrador'
-                        ? 'Supervisión'
-                        : 'Espacio docente'
-                }
-                items={roleItems[role]}
+                title="Mi información"
+                items={[
+                  {
+                    title: 'Información personal',
+                    description: 'Datos de identificación y contacto',
+                    icon: <ProfileIcon size={20} color="#2563EB" />,
+                    iconColor: '#2563EB',
+                    iconBg: '#EFF6FF',
+                  },
+                  {
+                    title: 'Editar perfil',
+                    description: 'Actualiza tu foto y datos visibles',
+                    icon: <EditIcon size={20} color="#7C3AED" />,
+                    iconColor: '#7C3AED',
+                    iconBg: '#F5F3FF',
+                  },
+                ]}
               />
 
-              {/* Opciones comunes que informan si una función está pendiente. */}
               <SectionGroup
-                title="Mi información y configuración"
-                items={configurationItems}
+                title="Configuración"
+                items={[
+                  {
+                    title: 'Notificaciones',
+                    description: 'Alertas, avisos y recordatorios',
+                    icon: <AlertIcon size={20} color="#D97706" />,
+                    iconColor: '#D97706',
+                    iconBg: '#FFFBEB',
+                  },
+                  {
+                    title: 'Preferencias',
+                    description: 'Idioma, apariencia y accesibilidad',
+                    icon: <SettingsIcon size={20} color="#0D9488" />,
+                    iconColor: '#0D9488',
+                    iconBg: '#F0FDFA',
+                  },
+                  {
+                    title: 'Seguridad',
+                    description: 'Cambia tu contraseña y acceso',
+                    icon: <LockIcon size={20} color="#DB2777" />,
+                    iconColor: '#DB2777',
+                    iconBg: '#FDF2F8',
+                  },
+                ]}
               />
 
               <SectionGroup
                 title="Ayuda"
-                items={helpItems}
+                items={[
+                  {
+                    title: 'Centro de ayuda',
+                    description: 'Guías y preguntas frecuentes',
+                    icon: <HelpIcon size={20} color="#0891B2" />,
+                    iconColor: '#0891B2',
+                    iconBg: '#ECFEFF',
+                  },
+                  {
+                    title: 'Acerca de EduAlerta',
+                    description: 'Versión, licencias e información legal',
+                    icon: <InfoIcon size={20} color="#64748B" />,
+                    iconColor: '#64748B',
+                    iconBg: '#F1F5F9',
+                  },
+                ]}
               />
+
 
               {/* Los mensajes hacen visible el resultado de las opciones seleccionadas. */}
               {notice && (
@@ -620,19 +603,23 @@ export default function Perfil() {
                     textAlign: 'left',
                   }}
                 >
-                  <div
-                    aria-hidden="true"
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background: '#FEF2F2',
-                      flexShrink: 0,
-                    }}
-                  />
-
-                  <div style={{ flex: 1 }}>
-                    <p
+                  <div 
+                  aria-hidden="true"
+                  style={{
+                    width: 38,
+                    height: 38,
+                    borderRadius: 11,
+                    background: '#FEF2F2',
+                    color: COLORS.riskHigh,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}>
+                    
+                    <LogOutIcon size={20} color={COLORS.riskHigh} />
+                  </div>
+                  <p
                       style={{
                         fontSize: 14,
                         fontWeight: 600,
@@ -642,18 +629,6 @@ export default function Perfil() {
                     >
                       Cerrar sesión
                     </p>
-
-                    <p
-                      style={{
-                        fontSize: 12,
-                        color: '#FCA5A5',
-                        margin: '3px 0 0',
-                      }}
-                    >
-                      Salir del perfil de demostración actual
-                    </p>
-                  </div>
-
                   <ChevronRight />
                 </button>
               </Card>

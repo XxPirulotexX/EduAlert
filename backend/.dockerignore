@@ -1,0 +1,12 @@
+# No incluir secretos ni archivos locales en la imagen.
+.env
+.env.*
+!.env.example
+
+# Excluir artefactos y configuración local del editor.
+target/
+.git/
+.idea/
+.vscode/
+*.iml
+.DS_Store

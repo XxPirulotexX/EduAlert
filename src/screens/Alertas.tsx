@@ -1,757 +1,295 @@
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
 
-import { useState } from 'react'
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
 import RiskBadge from '../components/RiskBadge'
-import { ChevronRight, FilterIcon } from '../components/icons'
-import { alertsService } from '../services/alerts.service'
+import { alertasApiService, type AlertFollowUp, type AlertStatus, type ApiAlert } from '../services/alertas-api.service'
+import { studentsApiService, type ApiStudent, type RiskLevel } from '../services/students-api.service'
+import { getCurrentAuthUser } from '../services/auth.service'
+import { ApiClientError } from '../services/api-client.service'
 import { COLORS } from '../theme'
-import type { AlertStatus } from '../types'
+import type { Risk, Role } from '../types'
 
-// Opciones disponibles para filtrar las alertas por nivel de riesgo.
-const FILTERS = [
-  'Todas',
-  'Prioritarias',
-  'Riesgo alto',
-  'Riesgo medio',
-  'Riesgo bajo',
-]
+type AlertFilter = 'Todas' | 'Prioritarias' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin evaluar'
+const FILTERS: AlertFilter[] = ['Todas', 'Prioritarias', 'Riesgo alto', 'Riesgo medio', 'Riesgo bajo', 'Sin evaluar']
+const STATUS_OPTIONS: AlertStatus[] = ['Nueva', 'En seguimiento', 'Revisada']
+const RISK_LABELS: Record<RiskLevel, string> = {
+  bajo: 'Riesgo bajo', medio: 'Riesgo medio', alto: 'Riesgo alto', sin_evaluar: 'Sin evaluar',
+}
+const primaryButton: CSSProperties = {
+  border: 'none', borderRadius: 10, padding: '10px 14px', background: COLORS.blue,
+  color: '#FFFFFF', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+}
+const secondaryButton: CSSProperties = {
+  border: `1px solid ${COLORS.border}`, borderRadius: 9, padding: '8px 11px',
+  background: '#FFFFFF', color: COLORS.navy, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+}
+const fieldStyle: CSSProperties = {
+  display: 'block', width: '100%', boxSizing: 'border-box', border: `1px solid ${COLORS.border}`,
+  borderRadius: 10, padding: '10px 12px', background: '#FFFFFF', color: COLORS.navy, fontSize: 13,
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Ocurrió un error inesperado. Inténtalo nuevamente.'
+}
+function isEvaluatedRisk(level: RiskLevel): level is Risk {
+  return level === 'bajo' || level === 'medio' || level === 'alto'
+}
+function formatDate(value: string) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })
+}
 
 export default function Alertas() {
-  const [activeFilter, setActiveFilter] = useState('Todas')
-  const [alerts, setAlerts] = useState(() => alertsService.getAll())
-  const [selectedAlertId, setSelectedAlertId] = useState<number | null>(null)
+  const [alerts, setAlerts] = useState<ApiAlert[]>([])
+  const [students, setStudents] = useState<ApiStudent[]>([])
+  const [loading, setLoading] = useState(true)
+  const [pageError, setPageError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [activeFilter, setActiveFilter] = useState<AlertFilter>('Todas')
+  const [formOpen, setFormOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [formError, setFormError] = useState('')
+  const [selectedStudentId, setSelectedStudentId] = useState('')
+  const [signal, setSignal] = useState('')
+  const [risk, setRisk] = useState<RiskLevel>('sin_evaluar')
+  const [statusSavingId, setStatusSavingId] = useState<number | null>(null)
+  const [expandedFollowUpId, setExpandedFollowUpId] = useState<number | null>(null)
+  const [followUps, setFollowUps] = useState<Record<number, AlertFollowUp[]>>({})
+  const [followUpDrafts, setFollowUpDrafts] = useState<Record<number, string>>({})
+  const [followUpLoadingId, setFollowUpLoadingId] = useState<number | null>(null)
+  const [followUpSavingId, setFollowUpSavingId] = useState<number | null>(null)
+  const [followUpError, setFollowUpError] = useState<Record<number, string>>({})
+  const currentRole = getCurrentAuthUser()?.rol ?? 'docente'
 
-  // Campos del formulario de seguimiento.
-  const [followUpNotes, setFollowUpNotes] = useState('')
-  const [followUpResponsible, setFollowUpResponsible] = useState('')
-  const [, setFollowUpRefresh] = useState(0)
-  const [followUpError, setFollowUpError] = useState('')
-
-  // Actualiza el estado de una alerta y sincroniza la lista.
-  const handleStatusChange = (id: number, status: AlertStatus) => {
+  /** Alertas, estudiantes y su nivel vigente se consultan desde SQL mediante la API. */
+  const loadData = useCallback(async () => {
+    setLoading(true)
+    setPageError('')
     try {
-      alertsService.updateStatus(id, status)
-      setAlerts(alertsService.getAll())
-      setFollowUpError('')
+      const [alertResults, studentResults] = await Promise.all([
+        alertasApiService.getAll(),
+        studentsApiService.getAll(),
+      ])
+      setAlerts(alertResults)
+      setStudents(studentResults.filter((student) => student.estado === 'activo'))
     } catch (error) {
-      setFollowUpError(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo actualizar el estado de la alerta.',
-      )
+      setPageError(errorMessage(error))
+    } finally {
+      setLoading(false)
     }
-  }
+  }, [])
 
-  // Registra una acción de acompañamiento para una alerta.
-  const handleAddFollowUp = (alertId: number) => {
-    try {
-      alertsService.addFollowUp({
-        alertId,
-        responsible: followUpResponsible,
-        notes: followUpNotes,
-      })
+  useEffect(() => { void loadData() }, [loadData])
 
-      setFollowUpNotes('')
-      setFollowUpResponsible('')
-      setFollowUpError('')
-      setFollowUpRefresh((previous) => previous + 1)
-    } catch (error) {
-      setFollowUpError(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo guardar el seguimiento.',
-      )
-    }
-  }
-
-  // Contadores derivados del estado actual de las alertas.
-  const alertCounts = {
-    total: alerts.length,
-    nuevas: alerts.filter((alert) => alert.status === 'Nueva').length,
-    seguimiento: alerts.filter(
-      (alert) => alert.status === 'En seguimiento',
-    ).length,
-    revisadas: alerts.filter(
-      (alert) => alert.status === 'Revisada',
-    ).length,
-  }
-
-  // Aplica el filtro seleccionado.
-  const filtered = alerts.filter((alert) => {
+  const filteredAlerts = useMemo(() => alerts.filter((alert) => {
     if (activeFilter === 'Todas') return true
+    if (activeFilter === 'Prioritarias' || activeFilter === 'Riesgo alto') return alert.nivelRiesgo === 'alto'
+    if (activeFilter === 'Riesgo medio') return alert.nivelRiesgo === 'medio'
+    if (activeFilter === 'Riesgo bajo') return alert.nivelRiesgo === 'bajo'
+    return alert.nivelRiesgo === 'sin_evaluar'
+  }), [alerts, activeFilter])
 
-    if (
-      activeFilter === 'Prioritarias' ||
-      activeFilter === 'Riesgo alto'
-    ) {
-      return alert.risk === 'alto'
+  const openCreateForm = () => {
+    setFormError(''); setNotice(''); setPageError('')
+    const firstStudent = students[0]
+    setSelectedStudentId(firstStudent ? String(firstStudent.id) : '')
+    setSignal('')
+    setRisk(firstStudent?.nivelRiesgo ?? 'sin_evaluar')
+    setFormOpen(true)
+  }
+
+  const handleCreateAlert = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    setFormError(''); setNotice('')
+    if (!selectedStudentId) {
+      setFormError('Selecciona un estudiante activo para asociar la alerta.')
+      return
     }
-
-    if (activeFilter === 'Riesgo medio') {
-      return alert.risk === 'medio'
+    if (!signal.trim()) {
+      setFormError('Describe la señal que requiere seguimiento.')
+      return
     }
-
-    if (activeFilter === 'Riesgo bajo') {
-      return alert.risk === 'bajo'
+    if (signal.trim().length > 500) {
+      setFormError('La descripción no puede superar 500 caracteres.')
+      return
     }
+    setSaving(true)
+    try {
+      const created = await alertasApiService.create({
+        estudianteId: Number(selectedStudentId),
+        senal: signal.trim(),
+        nivelRiesgo: risk,
+      })
+      setAlerts((current) => [created, ...current])
+      setNotice('La alerta se guardó en PostgreSQL.')
+      setFormOpen(false)
+      setSignal('')
+    } catch (error) {
+      setFormError(errorMessage(error))
+    } finally {
+      setSaving(false)
+    }
+  }
 
-    return true
-  })
+  /** Los cambios de estado se confirman primero en la API antes de actualizar React. */
+  const handleStatusChange = async (id: number, estado: AlertStatus) => {
+    setStatusSavingId(id); setPageError(''); setNotice('')
+    try {
+      const updated = await alertasApiService.updateStatus(id, estado)
+      setAlerts((current) => current.map((item) => item.id === id ? updated : item))
+      setNotice(`La alerta #${id} quedó en estado «${estado}».`)
+    } catch (error) {
+      setPageError(errorMessage(error))
+    } finally {
+      setStatusSavingId(null)
+    }
+  }
+
+  const toggleFollowUps = async (alertId: number) => {
+    if (expandedFollowUpId === alertId) {
+      setExpandedFollowUpId(null)
+      return
+    }
+    setExpandedFollowUpId(alertId)
+    setFollowUpError((current) => ({ ...current, [alertId]: '' }))
+    if (followUps[alertId]) return
+    setFollowUpLoadingId(alertId)
+    try {
+      const items = await alertasApiService.getFollowUps(alertId)
+      setFollowUps((current) => ({ ...current, [alertId]: items }))
+    } catch (error) {
+      setFollowUpError((current) => ({ ...current, [alertId]: errorMessage(error) }))
+    } finally {
+      setFollowUpLoadingId(null)
+    }
+  }
+
+  /** Las notas se asocian al usuario autenticado en el backend, no a texto libre del navegador. */
+  const handleAddFollowUp = async (alertId: number) => {
+    const note = (followUpDrafts[alertId] ?? '').trim()
+    if (!note) {
+      setFollowUpError((current) => ({ ...current, [alertId]: 'Escribe una observación antes de guardar.' }))
+      return
+    }
+    setFollowUpSavingId(alertId)
+    setFollowUpError((current) => ({ ...current, [alertId]: '' }))
+    try {
+      const created = await alertasApiService.addFollowUp(alertId, note)
+      setFollowUps((current) => ({ ...current, [alertId]: [created, ...(current[alertId] ?? [])] }))
+      setFollowUpDrafts((current) => ({ ...current, [alertId]: '' }))
+    } catch (error) {
+      const message = error instanceof ApiClientError && error.status === 401
+        ? 'La sesión venció. Inicia sesión de nuevo.'
+        : errorMessage(error)
+      setFollowUpError((current) => ({ ...current, [alertId]: message }))
+    } finally {
+      setFollowUpSavingId(null)
+    }
+  }
+
+  const activeCount = alerts.filter((alert) => alert.estado !== 'Revisada').length
+  const highCount = alerts.filter((alert) => alert.nivelRiesgo === 'alto' && alert.estado !== 'Revisada').length
 
   return (
     <PhoneCenter>
       <PhoneFrame desktopLayout>
-        {/* En escritorio, la navegación es la columna izquierda.
-            En móvil, el CSS la coloca en la parte inferior. */}
-        <BottomNav role="docente" />
-
-        {/* Este contenedor agrupa todo el contenido a la derecha
-            del menú lateral y permite que se adapte al espacio disponible. */}
+        <BottomNav role={currentRole as Role} />
         <div className="ea-screen-main">
-          {/* Encabezado de la pantalla */}
-          <div
-            className="ea-screen-header"
-            style={{
-              background: COLORS.navy,
-              padding: '16px 20px 18px',
-              flexShrink: 0,
-            }}
-          >
-            <div
-              style={{
-                flexWrap: 'wrap',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'flex-start',
-                gap: 10,
-              }}
-            >
+          <div className="ea-screen-header" style={{ background: COLORS.navy, padding: '18px 20px 16px', flexShrink: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
               <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    marginBottom: 4,
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 3,
-                      height: 22,
-                      background: COLORS.blue,
-                      borderRadius: 2,
-                    }}
-                  />
-
-                  <h1
-                    style={{
-                      color: '#FFFFFF',
-                      fontSize: 20,
-                      fontWeight: 700,
-                      margin: 0,
-                      letterSpacing: '-0.3px',
-                    }}
-                  >
-                    Alertas tempranas
-                  </h1>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                  <span style={{ width: 3, height: 22, background: COLORS.teal, borderRadius: 2 }} />
+                  <h1 style={{ color: '#FFFFFF', fontSize: 22, fontWeight: 700, margin: 0 }}>Alertas tempranas</h1>
                 </div>
-
-                <p
-                  style={{
-                    color: COLORS.subtle,
-                    fontSize: 13,
-                    margin: '0 0 0 11px',
-                  }}
-                >
-                  Identifica situaciones que requieren seguimiento
-                </p>
+                <p style={{ color: '#CBD5E1', fontSize: 12, margin: '0 0 0 11px', lineHeight: 1.5 }}>Señales, riesgo y seguimiento registrados</p>
               </div>
-
-              {/* Lleva al usuario directamente a los filtros. */}
-              <button
-                type="button"
-                aria-label="Opciones de filtro"
-                onClick={() =>
-                  document.getElementById('alert-filters')?.scrollIntoView({
-                    behavior: 'smooth',
-                    block: 'start',
-                  })
-                }
-                style={{
-                  background: 'rgba(255,255,255,0.07)',
-                  border: '1px solid rgba(255,255,255,0.1)',
-                  borderRadius: 10,
-                  padding: '7px 8px',
-                  cursor: 'pointer',
-                }}
-              >
-                <FilterIcon color="#CBD5E1" />
-              </button>
+              <button type="button" onClick={openCreateForm} style={{ ...primaryButton, flexShrink: 0 }}>+ Nueva alerta</button>
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 16 }}>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Activas</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{activeCount}</strong></div>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Riesgo alto activo</span><strong style={{ display: 'block', color: '#FCA5A5', fontSize: 20 }}>{highCount}</strong></div>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Total histórico</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{alerts.length}</strong></div>
             </div>
           </div>
 
-          {/* Contenido desplazable: filtros, resumen y alertas. */}
-          <div className="ea-screen-content no-scrollbar">
-            {/* Filtros por nivel de riesgo. */}
-            <div
-              id="alert-filters"
-              style={{
-                padding: '12px 16px 0',
-                overflowX: 'auto',
-              }}
-              className="no-scrollbar"
-            >
-              <div
-                style={{
-                  display: 'flex',
-                  gap: 8,
-                  width: 'max-content',
-                }}
-              >
-                {FILTERS.map((filter) => {
-                  const active = activeFilter === filter
+          <div className="ea-screen-content no-scrollbar" style={{ padding: '16px 20px 24px' }}>
+            {pageError && <div role="alert" style={{ background: '#FEF2F2', color: '#991B1B', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}><p style={{ margin: '0 0 8px' }}>{pageError}</p><button type="button" onClick={() => void loadData()} style={secondaryButton}>Reintentar</button></div>}
+            {notice && <div role="status" style={{ background: '#F0FDF4', color: '#166534', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>{notice}</div>}
 
-                  return (
-                    <button
-                      key={filter}
-                      type="button"
-                      onClick={() => setActiveFilter(filter)}
-                      aria-pressed={active}
-                      style={{
-                        background: active ? COLORS.blue : '#FFFFFF',
-                        color: active ? '#FFFFFF' : '#475569',
-                        border: active
-                          ? `1px solid ${COLORS.blue}`
-                          : `1px solid ${COLORS.border}`,
-                        borderRadius: 20,
-                        padding: '7px 14px',
-                        fontSize: 13,
-                        fontWeight: active ? 600 : 400,
-                        cursor: 'pointer',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {filter}
-                    </button>
-                  )
-                })}
-              </div>
+            <div className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 12 }}>
+              {FILTERS.map((filter) => {
+                const active = activeFilter === filter
+                return <button key={filter} type="button" onClick={() => setActiveFilter(filter)} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#FFFFFF', color: active ? '#FFFFFF' : '#475569', border: active ? `1px solid ${COLORS.blue}` : `1px solid ${COLORS.border}`, borderRadius: 20, padding: '7px 13px', fontSize: 12, fontWeight: active ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{filter}</button>
+              })}
             </div>
 
-            {/* Resumen de alertas calculado dinámicamente. */}
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-                gap: 10,
-                padding: '14px 16px 4px',
-              }}
-            >
-              {[
-                {
-                  label: 'Total de alertas',
-                  value: alertCounts.total,
-                  color: COLORS.blue,
-                },
-                {
-                  label: 'Nuevas',
-                  value: alertCounts.nuevas,
-                  color: COLORS.riskHigh,
-                },
-                {
-                  label: 'En seguimiento',
-                  value: alertCounts.seguimiento,
-                  color: COLORS.riskMid,
-                },
-                {
-                  label: 'Revisadas',
-                  value: alertCounts.revisadas,
-                  color: COLORS.riskLow,
-                },
-              ].map((item) => (
-                <div
-                  key={item.label}
-                  style={{
-                    minWidth: 0,
-                    padding: 12,
-                    background: '#FFFFFF',
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 12,
-                    boxShadow: '0 1px 3px rgba(15,23,42,0.04)',
-                  }}
-                >
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: COLORS.subtle,
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {item.label}
-                  </div>
+            {loading && <p role="status" style={{ padding: 24, textAlign: 'center', color: COLORS.muted }}>Cargando alertas desde PostgreSQL...</p>}
+            {!loading && <p style={{ fontSize: 12, color: COLORS.subtle, margin: '4px 0 12px' }}>{filteredAlerts.length} {filteredAlerts.length === 1 ? 'alerta' : 'alertas'} · ordenadas por fecha de creación</p>}
+            {!loading && !pageError && filteredAlerts.length === 0 && <div style={{ padding: 24, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 14 }}><strong style={{ color: COLORS.navy, fontSize: 14 }}>No hay alertas para este filtro</strong><p style={{ color: COLORS.muted, fontSize: 12 }}>Puedes registrar una señal nueva con el botón «Nueva alerta».</p></div>}
 
-                  <div
-                    style={{
-                      marginTop: 5,
-                      fontSize: 22,
-                      fontWeight: 700,
-                      color: item.color,
-                    }}
-                  >
-                    {item.value}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Cantidad de resultados del filtro actual. */}
-            <div
-              style={{
-                padding: '12px 16px 6px',
-                display: 'flex',
-                justifyContent: 'space-between',
-              }}
-            >
-              <span style={{ fontSize: 12, color: COLORS.subtle }}>
-                {filtered.length}{' '}
-                {filtered.length === 1 ? 'alerta' : 'alertas'}
-              </span>
-
-              <span
-                style={{
-                  fontSize: 12,
-                  color: COLORS.blue,
-                  fontWeight: 500,
-                }}
-              >
-                Por prioridad
-              </span>
-            </div>
-
-            {/* Listado de alertas filtradas. */}
-            <div
-              style={{
-                padding: '0 16px 16px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 10,
-              }}
-            >
-              {filtered.length === 0 && (
-                <div
-                  style={{
-                    padding: 20,
-                    background: '#FFFFFF',
-                    border: `1px solid ${COLORS.border}`,
-                    borderRadius: 12,
-                    textAlign: 'center',
-                    color: COLORS.subtle,
-                    fontSize: 13,
-                  }}
-                >
-                  No hay alertas para este filtro.
-                </div>
-              )}
-
-              {filtered.map((alert) => {
-                const riskColor =
-                  alert.risk === 'alto'
-                    ? COLORS.riskHigh
-                    : alert.risk === 'medio'
-                      ? COLORS.riskMid
-                      : COLORS.riskLow
-
-                const isExpanded = selectedAlertId === alert.id
-
-                return (
-                  <div
-                    key={alert.id}
-                    onClick={() =>
-                      setSelectedAlertId(isExpanded ? null : alert.id)
-                    }
-                    style={{
-                      background: '#FFFFFF',
-                      borderRadius: 14,
-                      padding: '13px 14px',
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      alignItems: 'center',
-                      gap: 12,
-                      borderLeft:
-                        alert.risk === 'alto'
-                          ? `3px solid ${COLORS.riskHigh}`
-                          : '3px solid transparent',
-                      boxShadow: '0 1px 3px rgba(15,23,42,0.06)',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    {/* Identificador visual del estudiante. */}
-                    <div
-                      style={{
-                        width: 42,
-                        height: 42,
-                        borderRadius: 12,
-                        background: `${alert.avatarBg}18`,
-                        border: `1.5px solid ${alert.avatarBg}35`,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 700,
-                        fontSize: 14,
-                        color: alert.avatarBg,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {alert.initials}
-                    </div>
-
-                    {/* Información principal de la alerta. */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {!loading && filteredAlerts.map((alert) => {
+                const highRisk = alert.nivelRiesgo === 'alto'
+                const expanded = expandedFollowUpId === alert.id
+                const notes = followUps[alert.id] ?? []
+                const statusColor = alert.estado === 'Nueva' ? '#B45309' : alert.estado === 'En seguimiento' ? COLORS.blue : '#15803D'
+                const initials = alert.nombreEstudiante.split(/\s+/).slice(0, 2).map((part) => part[0] ?? '').join('').toUpperCase()
+                return <article key={alert.id} style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderLeft: highRisk ? `4px solid ${COLORS.riskHigh}` : `1px solid ${COLORS.border}`, borderRadius: 14, padding: 14, boxShadow: '0 1px 3px rgba(15,23,42,0.05)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div aria-hidden="true" style={{ width: 42, height: 42, borderRadius: 12, background: highRisk ? COLORS.riskHighBg : COLORS.lightBlue, color: highRisk ? COLORS.riskHigh : COLORS.blue, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{initials}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          marginBottom: 4,
-                          flexWrap: 'wrap',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 14,
-                            fontWeight: 600,
-                            color: COLORS.navy,
-                          }}
-                        >
-                          {alert.name}
-                        </span>
-
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: COLORS.subtle,
-                          }}
-                        >
-                          {alert.grade}
-                        </span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                        <strong style={{ fontSize: 14, color: COLORS.navy }}>{alert.nombreEstudiante}</strong>
+                        <span style={{ color: COLORS.subtle, fontSize: 11 }}>{alert.grado || 'Grado sin asignar'}</span>
                       </div>
-
-                      <div style={{ marginBottom: 6 }}>
-                        <RiskBadge risk={alert.risk} />
+                      <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginBottom: 7 }}>
+                        {isEvaluatedRisk(alert.nivelRiesgo) ? <RiskBadge risk={alert.nivelRiesgo} /> : <span style={{ color: '#64748B', background: '#F1F5F9', padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{RISK_LABELS[alert.nivelRiesgo]}</span>}
+                        <span style={{ color: statusColor, background: `${statusColor}14`, padding: '3px 8px', borderRadius: 20, fontSize: 11, fontWeight: 600 }}>{alert.estado}</span>
                       </div>
-
-                      <p
-                        style={{
-                          fontSize: 12,
-                          color: '#475569',
-                          margin: 0,
-                          lineHeight: 1.4,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        "{alert.signal}"
-                      </p>
-
-                      <div
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 8,
-                          marginTop: 6,
-                          flexWrap: 'wrap',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 500,
-                            color: riskColor,
-                            background: `${riskColor}15`,
-                            padding: '2px 8px',
-                            borderRadius: 20,
-                          }}
-                        >
-                          {alert.status}
-                        </span>
-
-                        <span
-                          style={{
-                            fontSize: 11,
-                            color: COLORS.subtle,
-                          }}
-                        >
-                          {alert.time}
-                        </span>
-                      </div>
+                      <p style={{ color: '#475569', fontSize: 13, lineHeight: 1.5, margin: '0 0 7px', overflowWrap: 'anywhere' }}>{alert.senal}</p>
+                      <p style={{ color: COLORS.subtle, fontSize: 11, margin: 0 }}>Creada: {formatDate(alert.creadoEn)} · Código: {alert.codigoEstudiantil}</p>
                     </div>
-
-                    <ChevronRight />
-
-                    {/* Panel expandible para gestionar la alerta. */}
-                    {isExpanded && (
-                      <div
-                        onClick={(event) => event.stopPropagation()}
-                        style={{
-                          width: '100%',
-                          boxSizing: 'border-box',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: 8,
-                          marginTop: 8,
-                          padding: 12,
-                          background: '#F8FAFC',
-                          border: '1px solid #E2E8F0',
-                          borderRadius: 12,
-                          cursor: 'default',
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: COLORS.navy,
-                          }}
-                        >
-                          Cambiar estado
-                        </span>
-
-                        {/* Estados permitidos por el modelo. */}
-                        {(
-                          ['Nueva', 'En seguimiento', 'Revisada'] as const
-                        ).map((status) => (
-                          <button
-                            key={status}
-                            type="button"
-                            onClick={() =>
-                              handleStatusChange(alert.id, status)
-                            }
-                            aria-pressed={alert.status === status}
-                            style={{
-                              padding: '10px 12px',
-                              borderRadius: 8,
-                              border:
-                                alert.status === status
-                                  ? `1px solid ${COLORS.blue}`
-                                  : '1px solid #E2E8F0',
-                              background:
-                                alert.status === status
-                                  ? '#DBEAFE'
-                                  : '#FFFFFF',
-                              color:
-                                alert.status === status
-                                  ? '#1D4ED8'
-                                  : '#334155',
-                              cursor: 'pointer',
-                              textAlign: 'left',
-                              fontSize: 12,
-                              fontWeight:
-                                alert.status === status ? 600 : 400,
-                            }}
-                          >
-                            {alert.status === status
-                              ? `✓ ${status}`
-                              : status}
-                          </button>
-                        ))}
-
-                        {/* Historial y formulario de seguimiento. */}
-                        <div
-                          style={{
-                            width: '100%',
-                            boxSizing: 'border-box',
-                            marginTop: 10,
-                            padding: 12,
-                            background: '#FFFFFF',
-                            border: '1px solid #E2E8F0',
-                            borderRadius: 12,
-                          }}
-                        >
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 700,
-                              color: COLORS.navy,
-                              marginBottom: 10,
-                            }}
-                          >
-                            Historial de seguimiento
-                          </div>
-
-                          {/* Registros asociados a esta alerta. */}
-                          {alertsService
-                            .getFollowUpsByAlert(alert.id)
-                            .map((item) => (
-                              <div
-                                key={item.id}
-                                style={{
-                                  padding: '10px 0',
-                                  borderBottom: '1px solid #E2E8F0',
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    fontSize: 11,
-                                    color: COLORS.blue,
-                                    fontWeight: 600,
-                                  }}
-                                >
-                                  {new Date(item.date).toLocaleString('es-CO')}
-                                </div>
-
-                                <div
-                                  style={{
-                                    fontSize: 12,
-                                    color: COLORS.navy,
-                                    marginTop: 4,
-                                  }}
-                                >
-                                  Responsable: {item.responsible}
-                                </div>
-
-                                <p
-                                  style={{
-                                    fontSize: 12,
-                                    color: '#475569',
-                                    margin: '5px 0 0',
-                                    lineHeight: 1.5,
-                                    whiteSpace: 'pre-wrap',
-                                    overflowWrap: 'anywhere',
-                                  }}
-                                >
-                                  {item.notes}
-                                </p>
-                              </div>
-                            ))}
-
-                          {/* Formulario controlado por React. */}
-                          <form
-                            onSubmit={(event) => {
-                              event.preventDefault()
-                              handleAddFollowUp(alert.id)
-                            }}
-                            style={{
-                              display: 'flex',
-                              flexDirection: 'column',
-                              gap: 8,
-                              marginTop: 12,
-                            }}
-                          >
-                            <label
-                              style={{
-                                fontSize: 12,
-                                color: COLORS.navy,
-                                fontWeight: 600,
-                              }}
-                            >
-                              Responsable
-                              <input
-                                value={followUpResponsible}
-                                onChange={(event) =>
-                                  setFollowUpResponsible(event.target.value)
-                                }
-                                placeholder="Nombre del responsable"
-                                autoComplete="name"
-                                required
-                                style={{
-                                  boxSizing: 'border-box',
-                                  width: '100%',
-                                  marginTop: 5,
-                                  padding: 10,
-                                  border: '1px solid #CBD5E1',
-                                  borderRadius: 8,
-                                  fontSize: 12,
-                                  background: '#FFFFFF',
-                                  color: COLORS.navy,
-                                }}
-                              />
-                            </label>
-
-                            <label
-                              style={{
-                                fontSize: 12,
-                                color: COLORS.navy,
-                                fontWeight: 600,
-                              }}
-                            >
-                              Acción realizada
-                              <textarea
-                                value={followUpNotes}
-                                onChange={(event) =>
-                                  setFollowUpNotes(event.target.value)
-                                }
-                                placeholder="Describe la acción realizada..."
-                                rows={3}
-                                required
-                                style={{
-                                  boxSizing: 'border-box',
-                                  width: '100%',
-                                  marginTop: 5,
-                                  padding: 10,
-                                  border: '1px solid #CBD5E1',
-                                  borderRadius: 8,
-                                  fontSize: 12,
-                                  resize: 'vertical',
-                                  background: '#FFFFFF',
-                                  color: COLORS.navy,
-                                }}
-                              />
-                            </label>
-
-                            {/* Mensaje de error del formulario. */}
-                            {followUpError && (
-                              <p
-                                role="alert"
-                                style={{
-                                  color: COLORS.riskHigh,
-                                  fontSize: 12,
-                                  margin: 0,
-                                }}
-                              >
-                                {followUpError}
-                              </p>
-                            )}
-
-                            <button
-                              type="submit"
-                              disabled={
-                                !followUpResponsible.trim() ||
-                                !followUpNotes.trim()
-                              }
-                              style={{
-                                padding: 10,
-                                border: 'none',
-                                borderRadius: 8,
-                                background:
-                                  followUpResponsible.trim() &&
-                                  followUpNotes.trim()
-                                    ? COLORS.blue
-                                    : '#CBD5E1',
-                                color: '#FFFFFF',
-                                fontSize: 12,
-                                fontWeight: 600,
-                                cursor:
-                                  followUpResponsible.trim() &&
-                                  followUpNotes.trim()
-                                    ? 'pointer'
-                                    : 'not-allowed',
-                              }}
-                            >
-                              Guardar seguimiento
-                            </button>
-                          </form>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                )
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 13, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.muted, fontSize: 12 }}>Estado
+                      <select aria-label={`Cambiar estado de la alerta ${alert.id}`} disabled={statusSavingId === alert.id} value={alert.estado} onChange={(event) => void handleStatusChange(alert.id, event.target.value as AlertStatus)} style={{ ...fieldStyle, width: 'auto', minHeight: 34, padding: '6px 8px', fontSize: 12 }}>
+                        {STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                      </select>
+                    </label>
+                    <button type="button" onClick={() => void toggleFollowUps(alert.id)} style={secondaryButton}>{expanded ? 'Ocultar seguimiento' : 'Ver / agregar seguimiento'}</button>
+                  </div>
+
+                  {expanded && <section aria-label={`Seguimientos de alerta ${alert.id}`} style={{ marginTop: 13, borderTop: `1px solid ${COLORS.border}`, paddingTop: 13 }}>
+                    <h3 style={{ fontSize: 13, color: COLORS.navy, margin: '0 0 10px' }}>Historial de seguimiento</h3>
+                    {followUpLoadingId === alert.id && <p style={{ color: COLORS.muted, fontSize: 12 }}>Cargando seguimiento...</p>}
+                    {followUpError[alert.id] && <p role="alert" style={{ color: COLORS.riskHigh, fontSize: 12 }}>{followUpError[alert.id]}</p>}
+                    {!followUpLoadingId && notes.length === 0 && !followUpError[alert.id] && <p style={{ color: COLORS.subtle, fontSize: 12 }}>Todavía no hay observaciones registradas.</p>}
+                    {notes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 10, background: '#F8FAFC', marginBottom: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><strong style={{ color: COLORS.navy, fontSize: 12 }}>{note.responsable}</strong><span style={{ color: COLORS.subtle, fontSize: 10 }}>{formatDate(note.creadoEn)}</span></div><p style={{ whiteSpace: 'pre-wrap', color: '#475569', fontSize: 12, lineHeight: 1.5, margin: '6px 0 0' }}>{note.observaciones}</p></div>)}
+                    <label htmlFor={`follow-up-${alert.id}`} style={{ display: 'block', fontSize: 12, fontWeight: 600, color: COLORS.navy, margin: '12px 0 6px' }}>Nueva observación</label>
+                    <textarea id={`follow-up-${alert.id}`} rows={2} maxLength={1000} value={followUpDrafts[alert.id] ?? ''} onChange={(event) => setFollowUpDrafts((current) => ({ ...current, [alert.id]: event.target.value }))} placeholder="Registra la acción o contacto realizado..." style={{ ...fieldStyle, resize: 'vertical' }} />
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}><button type="button" style={primaryButton} disabled={followUpSavingId === alert.id} onClick={() => void handleAddFollowUp(alert.id)}>{followUpSavingId === alert.id ? 'Guardando...' : 'Guardar seguimiento'}</button></div>
+                  </section>}
+                </article>
               })}
             </div>
           </div>
         </div>
+
+        {formOpen && <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="alert-form-title" style={{ width: '100%', maxWidth: 460, maxHeight: '90vh', overflowY: 'auto', borderRadius: 18, background: '#FFFFFF', padding: 22, boxSizing: 'border-box', boxShadow: '0 20px 60px rgba(15,23,42,0.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', marginBottom: 16 }}><div><h2 id="alert-form-title" style={{ margin: 0, fontSize: 20, color: COLORS.navy }}>Nueva alerta</h2><p style={{ color: COLORS.muted, fontSize: 12, lineHeight: 1.5 }}>Se almacenará en la base de datos y quedará asociada a un estudiante.</p></div><button type="button" onClick={() => { if (!saving) setFormOpen(false) }} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 24, cursor: 'pointer' }} aria-label="Cerrar formulario">×</button></div>
+            {formError && <p role="alert" style={{ color: '#991B1B', background: '#FEF2F2', borderRadius: 10, padding: 11, fontSize: 12 }}>{formError}</p>}
+            {students.length === 0 && <p role="alert" style={{ color: '#92400E', background: '#FFFBEB', borderRadius: 10, padding: 11, fontSize: 12 }}>No hay estudiantes activos disponibles. Crea o reactiva una ficha antes de registrar una alerta.</p>}
+            <form onSubmit={handleCreateAlert} style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+              <div><label htmlFor="alert-student" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Estudiante *</label><select id="alert-student" required value={selectedStudentId} onChange={(event) => { setSelectedStudentId(event.target.value); const student = students.find((item) => item.id === Number(event.target.value)); setRisk(student?.nivelRiesgo ?? 'sin_evaluar') }} style={fieldStyle}><option value="">Selecciona un estudiante</option>{students.map((student) => <option key={student.id} value={student.id}>{student.nombres} {student.apellidos} · {student.codigoEstudiantil}</option>)}</select></div>
+              <div><label htmlFor="alert-risk" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Nivel de riesgo asociado</label><select id="alert-risk" value={risk} onChange={(event) => setRisk(event.target.value as RiskLevel)} style={fieldStyle}><option value="sin_evaluar">Sin evaluar</option><option value="bajo">Bajo</option><option value="medio">Medio</option><option value="alto">Alto</option></select><p style={{ color: COLORS.muted, fontSize: 11, lineHeight: 1.45, margin: '5px 0 0' }}>Se guarda como referencia del evento al momento de crear la alerta.</p></div>
+              <div><label htmlFor="alert-signal" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Señal detectada *</label><textarea id="alert-signal" required maxLength={500} rows={4} value={signal} onChange={(event) => setSignal(event.target.value)} placeholder="Ej. Aumento de ausencias sin justificar" style={{ ...fieldStyle, resize: 'vertical' }} /></div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => setFormOpen(false)} disabled={saving} style={secondaryButton}>Cancelar</button><button type="submit" disabled={saving || students.length === 0} style={{ ...primaryButton, opacity: saving || students.length === 0 ? 0.7 : 1 }}>{saving ? 'Guardando...' : 'Crear alerta'}</button></div>
+            </form>
+          </section>
+        </div>}
       </PhoneFrame>
     </PhoneCenter>
   )

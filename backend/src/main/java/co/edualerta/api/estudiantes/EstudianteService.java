@@ -5,7 +5,9 @@ import co.edualerta.api.riesgos.EvaluacionRiesgoRepository;
 import co.edualerta.api.riesgos.EvaluacionRiesgoResponse;
 import co.edualerta.api.usuarios.Usuario;
 import co.edualerta.api.usuarios.UsuarioRepository;
-import org.springframework.data.domain.Sort;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,9 +36,46 @@ public class EstudianteService {
     }
 
     @Transactional(readOnly = true)
-    public List<EstudianteResponse> listar() {
-        return estudianteRepository.findAll(Sort.by("apellidos", "nombres"))
-                .stream().map(this::convertirRespuesta).toList();
+    public Page<EstudianteResponse> listar(
+            String texto, String estado, String nivelRiesgo, String grado,
+            int pagina, int tamano
+    ) {
+        if (pagina < 0 || tamano < 1 || tamano > 100) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La página debe ser mayor o igual a cero y el tamaño debe estar entre 1 y 100"
+            );
+        }
+
+        String filtroTexto = normalizarFiltro(texto);
+        String filtroEstado = normalizarFiltro(estado);
+        String filtroRiesgo = normalizarFiltro(nivelRiesgo);
+        String filtroGrado = normalizarFiltro(grado);
+
+        if (filtroEstado != null && !List.of("activo", "inactivo", "egresado", "retirado").contains(filtroEstado)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El filtro de estado no es válido");
+        }
+        if (filtroRiesgo != null && !List.of("bajo", "medio", "alto", "sin_evaluar").contains(filtroRiesgo)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El filtro de riesgo no es válido");
+        }
+        if (filtroGrado != null && filtroGrado.length() > 10) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "El filtro de grado no puede superar 10 caracteres");
+        }
+
+        Pageable pageable = PageRequest.of(pagina, tamano);
+        // Las cadenas vacías representan filtros opcionales no informados en la consulta JPQL.
+        return estudianteRepository.buscarPaginado(
+                filtroTexto == null ? "" : filtroTexto,
+                filtroEstado == null ? "" : filtroEstado,
+                filtroRiesgo == null ? "" : filtroRiesgo,
+                filtroGrado == null ? "" : filtroGrado,
+                pageable
+        );
+    }
+
+    private String normalizarFiltro(String value) {
+        if (value == null || value.isBlank()) return null;
+        return value.trim().toLowerCase(Locale.ROOT);
     }
 
     @Transactional(readOnly = true)
@@ -179,3 +218,6 @@ public class EstudianteService {
         return codigo.trim().toUpperCase(Locale.ROOT);
     }
 }
+
+
+

@@ -1,0 +1,458 @@
+﻿from pathlib import Path
+
+import pandas as pd
+from fastapi import FastAPI, HTTPException
+
+app = FastAPI(
+    title="EduAlerta ML Service",
+    description="Servicio de preparación y validación de datos para EduAlerta",
+    version="0.1.0",
+)
+
+# Los CSV existentes están en backend/dataset-trabajo/raw.
+DATA_DIR = Path(__file__).resolve().parent.parent / "dataset-trabajo" / "raw"
+
+DATASETS = {
+    "estudiantes": "estudiantes_demo.csv",
+    "evaluaciones_riesgo": "evaluaciones_riesgo_demo.csv",
+    "alertas": "alertas_demo.csv",
+}
+
+
+def load_dataset(filename: str) -> pd.DataFrame:
+    path = DATA_DIR / filename
+
+    if not path.is_file():
+        raise FileNotFoundError(f"No se encontró el archivo: {path}")
+
+    return pd.read_csv(path, encoding="utf-8-sig")
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "edualerta-ml-service",
+        "version": app.version,
+    }
+
+
+@app.get("/datasets")
+def datasets_summary():
+    summary = {}
+
+    for name, filename in DATASETS.items():
+        try:
+            df = load_dataset(filename)
+
+            summary[name] = {
+                "archivo": filename,
+                "filas": len(df),
+                "columnas": df.columns.tolist(),
+                "valores_faltantes_por_columna": {
+                    column: int(count)
+                    for column, count in df.isna().sum().items()
+                },
+                "estado": "cargado",
+            }
+        except FileNotFoundError as error:
+            summary[name] = {
+                "archivo": filename,
+                "estado": "no_disponible",
+                "detalle": str(error),
+            }
+        except (pd.errors.ParserError, UnicodeDecodeError, OSError) as error:
+            summary[name] = {
+                "archivo": filename,
+                "estado": "error_lectura",
+                "detalle": str(error),
+            }
+
+    unavailable = [
+        name
+        for name, details in summary.items()
+        if details["estado"] != "cargado"
+    ]
+
+    if unavailable:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "mensaje": "No fue posible cargar todos los conjuntos de datos.",
+                "conjuntos": summary,
+            },
+        )
+
+    return {"conjuntos": summary}
+
+@app.get("/datasets/validate")
+def validate_datasets():
+    required_columns = {
+        "estudiantes": [
+            "codigo_estudiantil",
+            "grado",
+            "promedio_actual",
+            "estado",
+        ],
+        "evaluaciones_riesgo": [
+            "evaluacion_id",
+            "codigo_estudiantil",
+            "nivel",
+            "fuente",
+            "version_modelo",
+        ],
+        "alertas": [
+            "alerta_id",
+            "codigo_estudiantil",
+            "nivel_riesgo",
+            "senal",
+            "estado",
+        ],
+    }
+
+    id_columns = {
+        "estudiantes": "codigo_estudiantil",
+        "evaluaciones_riesgo": "evaluacion_id",
+        "alertas": "alerta_id",
+    }
+
+    reference_columns = {
+        "evaluaciones_riesgo": "codigo_estudiantil",
+        "alertas": "codigo_estudiantil",
+    }
+
+    valid_risk_levels = {"bajo", "medio", "alto"}
+    results = {}
+    errors = []
+    warnings = []
+    info = []
+
+    dataframes = {}
+
+    for name, filename in DATASETS.items():
+        try:
+            df = load_dataset(filename)
+            dataframes[name] = df
+        except (FileNotFoundError, pd.errors.ParserError, UnicodeDecodeError, OSError) as error:
+            errors.append({
+                "conjunto": name,
+                "mensaje": f"No se pudo cargar el archivo: {error}",
+            })
+            results[name] = {"estado": "error_lectura"}
+            continue
+
+        dataset_errors = []
+        dataset_warnings = []
+        dataset_info = []
+
+        missing_columns = [
+            column
+            for column in required_columns[name]
+            if column not in df.columns
+        ]
+
+        if missing_columns:
+            dataset_errors.append({
+                "tipo": "columnas_faltantes",
+                "columnas": missing_columns,
+            })
+
+        if not missing_columns:
+            id_column = id_columns[name]
+
+            if df[id_column].isna().any():
+                dataset_errors.append({
+                    "tipo": "identificadores_vacios",
+                    "columna": id_column,
+                    "cantidad": int(df[id_column].isna().sum()),
+                })
+
+            duplicate_count = int(
+                df[id_column].dropna().duplicated().sum()
+            )
+
+            if duplicate_count:
+                dataset_errors.append({
+                    "tipo": "identificadores_duplicados",
+                    "columna": id_column,
+                    "cantidad": duplicate_count,
+                })
+
+            for column in required_columns[name]:
+                if df[column].isna().any():
+                    dataset_warnings.append({
+                        "tipo": "valores_faltantes",
+                        "columna": column,
+                        "cantidad": int(df[column].isna().sum()),
+                    })
+
+        risk_column = (
+            "nivel"
+            if name == "evaluaciones_riesgo"
+            else "nivel_riesgo"
+            if name == "alertas"
+            else None
+        )
+
+        if risk_column and risk_column in df.columns:
+            normalized_levels = (
+                df[risk_column]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.lower()
+            )
+
+            invalid_levels = sorted(
+                set(normalized_levels) - valid_risk_levels
+            )
+
+            if invalid_levels:
+                dataset_errors.append({
+                    "tipo": "niveles_de_riesgo_invalidos",
+                    "columna": risk_column,
+                    "valores": invalid_levels,
+                })
+
+        if (
+            name == "evaluaciones_riesgo"
+            and "version_modelo" in df.columns
+            and df["version_modelo"].isna().any()
+        ):
+            dataset_info.append({
+                "tipo": "version_modelo_no_registrada",
+                "cantidad": int(df["version_modelo"].isna().sum()),
+                "mensaje": "No se debe atribuir estas evaluaciones a un modelo entrenado.",
+            })
+
+        if (
+            name == "alertas"
+            and "actualizado_en" in df.columns
+            and df["actualizado_en"].isna().any()
+        ):
+            dataset_info.append({
+                "tipo": "fecha_actualizacion_faltante",
+                "cantidad": int(df["actualizado_en"].isna().sum()),
+            })
+
+        results[name] = {
+            "archivo": DATASETS[name],
+            "filas": len(df),
+            "estado": "error" if dataset_errors else "advertencia" if dataset_warnings else "correcto",
+            "errores": dataset_errors,
+            "advertencias": dataset_warnings,
+            "informacion": dataset_info,
+        }
+
+        errors.extend(
+            {"conjunto": name, **item}
+            for item in dataset_errors
+        )
+        warnings.extend(
+            {"conjunto": name, **item}
+            for item in dataset_warnings
+        )
+        info.extend(
+            {"conjunto": name, **item}
+            for item in dataset_info
+        )
+
+    students = dataframes.get("estudiantes")
+
+    if students is not None and "codigo_estudiantil" in students.columns:
+        known_codes = set(
+            students["codigo_estudiantil"].dropna().astype(str).str.strip()
+        )
+
+        for name, column in reference_columns.items():
+            df = dataframes.get(name)
+
+            if df is None or column not in df.columns:
+                continue
+
+            referenced_codes = set(
+                df[column].dropna().astype(str).str.strip()
+            )
+            unknown_codes = sorted(referenced_codes - known_codes)
+
+            if unknown_codes:
+                warnings.append({
+                    "conjunto": name,
+                    "tipo": "referencias_fuera_del_csv",
+                    "cantidad": len(unknown_codes),
+                    "codigos": unknown_codes,
+                    "mensaje": "Pueden pertenecer a estudiantes fuera del subconjunto demo.",
+                })
+
+    return {
+        "estado": "error" if errors else "advertencia" if warnings else "correcto",
+        "resumen": {
+            "conjuntos": len(DATASETS),
+            "conjuntos_cargados": len(dataframes),
+            "errores": len(errors),
+            "advertencias": len(warnings),
+            "observaciones": len(info),
+        },
+        "conjuntos": results,
+        "errores": errors,
+        "advertencias": warnings,
+        "informacion": info,
+    }
+
+@app.get("/datasets/prepare")
+def prepare_datasets():
+    prepared = {}
+    errors = []
+
+    for name, filename in DATASETS.items():
+        try:
+            df = load_dataset(filename).copy()
+
+            # Normalizar espacios en columnas de texto.
+            for column in df.select_dtypes(include=["object"]).columns:
+                df[column] = df[column].map(
+                    lambda value: value.strip() if isinstance(value, str) else value
+                )
+                df[column] = df[column].replace("", pd.NA)
+
+            # Convertir variables numéricas y fechas.
+            if name == "estudiantes":
+                df["promedio_actual"] = pd.to_numeric(
+                    df["promedio_actual"], errors="coerce"
+                )
+                df["creado_en"] = pd.to_datetime(
+                    df["creado_en"], errors="coerce", utc=True
+                )
+
+            elif name == "evaluaciones_riesgo":
+                df["evaluacion_id"] = pd.to_numeric(
+                    df["evaluacion_id"], errors="coerce"
+                ).astype("Int64")
+                df["version_modelo"] = df["version_modelo"].astype("string")
+                df["creado_en"] = pd.to_datetime(
+                    df["creado_en"], errors="coerce", utc=True
+                )
+                df["nivel"] = df["nivel"].str.lower()
+
+            elif name == "alertas":
+                df["alerta_id"] = pd.to_numeric(
+                    df["alerta_id"], errors="coerce"
+                ).astype("Int64")
+                df["creado_en"] = pd.to_datetime(
+                    df["creado_en"], errors="coerce", utc=True
+                )
+                df["actualizado_en"] = pd.to_datetime(
+                    df["actualizado_en"], errors="coerce", utc=True
+                )
+                df["nivel_riesgo"] = df["nivel_riesgo"].str.lower()
+
+            prepared[name] = {
+                "filas": len(df),
+                "columnas": df.columns.tolist(),
+                "tipos": {
+                    column: str(dtype)
+                    for column, dtype in df.dtypes.items()
+                },
+                "valores_faltantes": {
+                    column: int(count)
+                    for column, count in df.isna().sum().items()
+                },
+                "muestra": df.head(3).astype(object).where(
+                    pd.notna(df.head(3)), None
+                ).to_dict(orient="records"),
+                "estado": "preparado",
+            }
+
+        except (FileNotFoundError, pd.errors.ParserError, UnicodeDecodeError, OSError, KeyError, ValueError) as error:
+            errors.append({
+                "conjunto": name,
+                "detalle": str(error),
+            })
+
+    return {
+        "estado": "error" if errors else "correcto",
+        "mensaje": (
+            "Preparación en memoria completada. No se entrenó ningún modelo."
+            if not errors
+            else "Uno o más conjuntos no pudieron prepararse."
+        ),
+        "objetivo_desercion_disponible": False,
+        "advertencia_modelado": (
+            "Se necesita una variable objetivo observada que identifique "
+            "deserción o continuidad. Los niveles de riesgo no sustituyen "
+            "esa variable."
+        ),
+        "conjuntos": prepared,
+        "errores": errors,
+    }
+
+@app.get("/modeling/readiness")
+def modeling_readiness():
+    student_file = DATASETS["estudiantes"]
+
+    try:
+        students = load_dataset(student_file).copy()
+    except (FileNotFoundError, pd.errors.ParserError, UnicodeDecodeError, OSError) as error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No se pudo cargar el conjunto de estudiantes: {error}",
+        )
+
+    # Estas columnas no constituyen por sí mismas una etiqueta de deserción.
+    possible_target_names = {
+        "deserto",
+        "desercion",
+        "abandono",
+        "abandono_escolar",
+        "continuidad",
+        "estado_final",
+        "resultado_final",
+        "dropout",
+        "dropout_status",
+    }
+
+    available_targets = [
+        column
+        for column in students.columns
+        if column.strip().lower() in possible_target_names
+    ]
+
+    excluded_features = {
+        "codigo_estudiantil",
+        "estado",
+        "creado_en",
+    }
+
+    candidate_features = [
+        column
+        for column in students.columns
+        if column not in excluded_features
+        and column not in available_targets
+        and pd.api.types.is_numeric_dtype(students[column])
+    ]
+
+    missing_by_column = {
+        column: int(count)
+        for column, count in students.isna().sum().items()
+    }
+
+    target_available = bool(available_targets)
+
+    return {
+        "estado": "listo_para_exploracion" if not target_available else "requiere_revision_de_etiqueta",
+        "filas_disponibles": len(students),
+        "variables_numericas_candidatas": candidate_features,
+        "variables_objetivo_detectadas": available_targets,
+        "valores_faltantes": missing_by_column,
+        "entrenamiento_autorizado": False,
+        "motivo": (
+            "Se detectaron columnas candidatas a objetivo, pero debe verificarse "
+            "que representen resultados reales observados."
+            if target_available
+            else "No existe una columna reconocible que registre deserción o continuidad real."
+        ),
+        "siguiente_requisito": (
+            "Definir una variable objetivo basada en resultados observados y revisar "
+            "la cantidad de registros y la distribución de clases antes del entrenamiento."
+        ),
+    }

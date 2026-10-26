@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
@@ -27,6 +27,8 @@ type FormValues = {
   nivelRiesgo: RiskLevel
   observacionesRiesgo: string
 }
+
+const PAGE_SIZE = 10
 
 const EMPTY_FORM: FormValues = {
   codigoEstudiantil: '', nombres: '', apellidos: '', estado: 'activo',
@@ -88,6 +90,9 @@ export default function ListaEstudiantes() {
   const [notice, setNotice] = useState('')
   const [search, setSearch] = useState('')
   const [activeFilter, setActiveFilter] = useState<FilterKey>('todos')
+  const [currentPage, setCurrentPage] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+  const [totalElements, setTotalElements] = useState(0)
 
   const [formOpen, setFormOpen] = useState(false)
   const [editingStudent, setEditingStudent] = useState<ApiStudent | null>(null)
@@ -97,35 +102,40 @@ export default function ListaEstudiantes() {
   const [saving, setSaving] = useState(false)
   const [processingId, setProcessingId] = useState<number | null>(null)
 
-  /** El listado siempre se obtiene de la API; localStorage no es fuente de estudiantes. */
+  /** La búsqueda, los filtros y la paginación se ejecutan en PostgreSQL. */
   const loadStudents = useCallback(async () => {
     setLoading(true)
     setPageError('')
     try {
-      setStudents(sortStudents(await studentsApiService.getAll()))
+      const isStatus = ['activo', 'inactivo', 'egresado', 'retirado'].includes(activeFilter)
+      const riskFilter = activeFilter.startsWith('riesgo:')
+        ? activeFilter.slice('riesgo:'.length) as RiskLevel
+        : undefined
+      const result = await studentsApiService.getPage({
+        texto: search,
+        estado: isStatus ? activeFilter as StudentStatus : undefined,
+        nivelRiesgo: riskFilter,
+        pagina: currentPage,
+        tamano: PAGE_SIZE,
+      })
+      setTotalPages(result.totalPages)
+      setTotalElements(result.totalElements)
+      if (currentPage > 0 && currentPage >= result.totalPages) {
+        setCurrentPage(Math.max(0, result.totalPages - 1))
+        return
+      }
+      setStudents(sortStudents(result.content))
     } catch (error) {
       setPageError(getErrorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [activeFilter, currentPage, search])
 
   useEffect(() => { void loadStudents() }, [loadStudents])
 
-  const filtered = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase('es')
-    return students.filter((student) => {
-      const fullName = `${student.nombres} ${student.apellidos}`.toLocaleLowerCase('es')
-      const matchesSearch = !query || fullName.includes(query) || student.codigoEstudiantil.toLocaleLowerCase('es').includes(query)
-      let matchesFilter = true
-      if (['activo', 'inactivo', 'egresado', 'retirado'].includes(activeFilter)) {
-        matchesFilter = student.estado === activeFilter
-      } else if (activeFilter.startsWith('riesgo:')) {
-        matchesFilter = student.nivelRiesgo === activeFilter.substring('riesgo:'.length)
-      }
-      return matchesSearch && matchesFilter
-    })
-  }, [students, search, activeFilter])
+  // PostgreSQL ya aplica búsqueda y filtros; no se vuelve a filtrar una sola página en React.
+  const filtered = students
 
   const openCreateForm = () => {
     setEditingStudent(null); setForm({ ...EMPTY_FORM }); setFieldErrors({})
@@ -198,14 +208,15 @@ export default function ListaEstudiantes() {
     setSaving(true)
     try {
       if (editingStudent) {
-        const updated = await studentsApiService.update(editingStudent.id, payload)
-        // La respuesta incluye el último nivel de riesgo ya guardado en la base de datos.
-        setStudents((current) => sortStudents(current.map((item) => item.id === updated.id ? updated : item)))
+        await studentsApiService.update(editingStudent.id, payload)
+        // Se vuelve a consultar la página activa para respetar filtros y orden del servidor.
+        await loadStudents()
         setNotice('La ficha y sus indicadores se actualizaron correctamente.')
       } else {
-        const created = await studentsApiService.create(payload)
-        setStudents((current) => sortStudents([...current, created]))
+        await studentsApiService.create(payload)
         setNotice('El estudiante se registró en la base de datos.')
+        if (currentPage === 0) await loadStudents()
+        else setCurrentPage(0)
       }
       setFormOpen(false); setEditingStudent(null); setForm({ ...EMPTY_FORM }); setFieldErrors({})
     } catch (error) {
@@ -223,7 +234,7 @@ export default function ListaEstudiantes() {
     setProcessingId(student.id); setPageError(''); setNotice('')
     try {
       await studentsApiService.deactivate(student.id)
-      setStudents((current) => current.map((item) => item.id === student.id ? { ...item, estado: 'inactivo' } : item))
+      await loadStudents()
       setNotice('El estudiante fue desactivado. Su historial sigue guardado.')
     } catch (error) {
       setPageError(getErrorMessage(error))
@@ -248,14 +259,14 @@ export default function ListaEstudiantes() {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: '10px 14px', marginBottom: 14 }}>
               <SearchIcon />
-              <input type="search" aria-label="Buscar por nombre o código" placeholder="Buscar estudiante..." value={search} onChange={(event) => setSearch(event.target.value)} style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', fontSize: 14, color: COLORS.navy }} />
+              <input type="search" aria-label="Buscar por nombre o código" placeholder="Buscar estudiante..." value={search} onChange={(event) => { setSearch(event.target.value); setCurrentPage(0) }} style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', fontSize: 14, color: COLORS.navy }} />
               <button type="button" aria-label="Ir a los filtros" onClick={() => document.getElementById('student-filters')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })} style={{ border: 'none', background: 'transparent', cursor: 'pointer', display: 'flex' }}><FilterIcon color={COLORS.blue} /></button>
             </div>
 
             <div id="student-filters" className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 14 }}>
               {FILTERS.map((filter) => {
                 const active = activeFilter === filter.key
-                return <button key={filter.key} type="button" onClick={() => setActiveFilter(filter.key)} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#F1F5F9', color: active ? '#FFFFFF' : '#475569', border: 'none', borderRadius: 20, padding: '7px 14px', fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>{filter.label}</button>
+                return <button key={filter.key} type="button" onClick={() => { setActiveFilter(filter.key); setCurrentPage(0) }} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#F1F5F9', color: active ? '#FFFFFF' : '#475569', border: 'none', borderRadius: 20, padding: '7px 14px', fontSize: 12, fontWeight: 500, cursor: 'pointer' }}>{filter.label}</button>
               })}
             </div>
           </div>
@@ -265,8 +276,8 @@ export default function ListaEstudiantes() {
             {notice && <div role="status" style={{ padding: 12, marginBottom: 14, borderRadius: 12, background: '#F0FDF4', color: '#166534', fontSize: 13 }}>{notice}</div>}
             {loading && <p role="status" style={{ padding: 20, textAlign: 'center', color: COLORS.muted, fontSize: 14 }}>Cargando estudiantes desde PostgreSQL...</p>}
 
-            {!loading && <p aria-live="polite" style={{ fontSize: 13, fontWeight: 600, color: COLORS.navy, margin: '0 0 12px' }}>{filtered.length} {filtered.length === 1 ? 'estudiante' : 'estudiantes'}</p>}
-            {!loading && !pageError && filtered.length === 0 && <div style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 22, textAlign: 'center' }}><p style={{ color: COLORS.navy, fontSize: 14, fontWeight: 600, margin: '0 0 8px' }}>No se encontraron estudiantes</p><button type="button" onClick={() => { setSearch(''); setActiveFilter('todos') }} style={secondaryButton}>Limpiar filtros</button></div>}
+            {!loading && <p aria-live="polite" style={{ fontSize: 13, fontWeight: 600, color: COLORS.navy, margin: '0 0 12px' }}>Mostrando {filtered.length} de {totalElements} {totalElements === 1 ? 'estudiante' : 'estudiantes'}</p>}
+            {!loading && !pageError && filtered.length === 0 && <div style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 14, padding: 22, textAlign: 'center' }}><p style={{ color: COLORS.navy, fontSize: 14, fontWeight: 600, margin: '0 0 8px' }}>No se encontraron estudiantes</p><button type="button" onClick={() => { setSearch(''); setActiveFilter('todos'); setCurrentPage(0) }} style={secondaryButton}>Limpiar filtros</button></div>}
 
             {!loading && filtered.map((student) => {
               const fullName = `${student.nombres} ${student.apellidos}`
@@ -296,6 +307,14 @@ export default function ListaEstudiantes() {
                 </article>
               )
             })}
+
+            {!loading && !pageError && <div aria-label="Paginación de estudiantes" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
+              <span style={{ color: COLORS.muted, fontSize: 12 }}>Página {totalPages === 0 ? 0 : currentPage + 1} de {totalPages}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" disabled={currentPage === 0 || loading} onClick={() => setCurrentPage((page) => Math.max(0, page - 1))} style={{ ...secondaryButton, opacity: currentPage === 0 ? 0.5 : 1 }}>Anterior</button>
+                <button type="button" disabled={totalPages === 0 || currentPage + 1 >= totalPages || loading} onClick={() => setCurrentPage((page) => page + 1)} style={{ ...secondaryButton, opacity: totalPages === 0 || currentPage + 1 >= totalPages ? 0.5 : 1 }}>Siguiente</button>
+              </div>
+            </div>}
           </div>
         </div>
 
@@ -325,3 +344,6 @@ export default function ListaEstudiantes() {
     </PhoneCenter>
   )
 }
+
+
+

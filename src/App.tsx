@@ -12,6 +12,8 @@ import FichaEstudiante from './screens/FichaEstudiante'
 import Alertas from './screens/Alertas'
 import Analitica from './screens/Analitica'
 import AdminUsuarios from './screens/AdminUsuarios'
+import PrediccionRiesgo from './screens/PrediccionRiesgo'
+import RegistroResultadosAcademicos from './screens/RegistroResultadosAcademicos'
 
 // Pantallas del estudiante.
 import HomeEstudiante from './screens/HomeEstudiante'
@@ -44,6 +46,8 @@ export default function App() {
       <Route path="/app/estudiantes/:id" element={<ProtectedRoute allowedRoles={EDITOR_ROLES}><FichaEstudiante /></ProtectedRoute>} />
       <Route path="/app/alertas" element={<ProtectedRoute allowedRoles={STAFF_ROLES}><Alertas /></ProtectedRoute>} />
       <Route path="/app/analitica" element={<ProtectedRoute allowedRoles={STAFF_ROLES}><Analitica /></ProtectedRoute>} />
+      <Route path="/app/prediccion-riesgo" element={<ProtectedRoute allowedRoles={STAFF_ROLES}><PrediccionRiesgo /></ProtectedRoute>} />
+      <Route path="/app/resultados-academicos" element={<ProtectedRoute allowedRoles={EDITOR_ROLES}><RegistroResultadosAcademicos /></ProtectedRoute>} />
 
       {/* La administración de cuentas es exclusiva del rol administrador. */}
       <Route path="/app/admin/usuarios" element={<ProtectedRoute allowedRoles={ADMIN_ROLES}><AdminUsuarios /></ProtectedRoute>} />
@@ -61,3 +65,6 @@ export default function App() {
     </Routes>
   )
 }
+
+
+

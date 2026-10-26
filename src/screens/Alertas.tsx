@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type CSSProperties, type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
@@ -14,18 +15,19 @@ import type { Risk, Role } from '../types'
 type RiskFilter = 'Todas' | 'Prioritarias' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin evaluar'
 type StatusFilter = 'Todos' | AlertStatus
 type GradeFilter = 'Todos' | '10°' | '11°' | 'Otros'
+const PAGE_SIZE = 10
 
 const RISK_FILTERS: RiskFilter[] = [
   'Todas', 'Prioritarias', 'Riesgo alto', 'Riesgo medio', 'Riesgo bajo', 'Sin evaluar',
 ]
-const STATUS_FILTERS: StatusFilter[] = ['Todos', 'Nueva', 'En seguimiento', 'Revisada']
+const STATUS_FILTERS: StatusFilter[] = ['Todos', 'Nueva', 'En seguimiento', 'Revisada', 'Archivada']
 const GRADE_FILTERS: { value: GradeFilter; label: string }[] = [
   { value: 'Todos', label: 'Todos los grados' },
   { value: '10°', label: 'Décimo (10°)' },
   { value: '11°', label: 'Once (11°)' },
   { value: 'Otros', label: 'Otros / sin grado' },
 ]
-const STATUS_OPTIONS: AlertStatus[] = ['Nueva', 'En seguimiento', 'Revisada']
+const STATUS_OPTIONS: Exclude<AlertStatus, 'Archivada'>[] = ['Nueva', 'En seguimiento', 'Revisada']
 const RISK_LABELS: Record<RiskLevel, string> = {
   bajo: 'Riesgo bajo', medio: 'Riesgo medio', alto: 'Riesgo alto', sin_evaluar: 'Sin evaluar',
 }
@@ -53,26 +55,8 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-/** Normaliza texto para que la búsqueda no dependa de tildes o mayúsculas. */
-function normalizeText(value: string) {
-  return value
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLocaleLowerCase('es')
-    .trim()
-}
-
-/** Agrupa los formatos habituales del grado en las opciones del filtro. */
-function normalizeGrade(value: string | null): Exclude<GradeFilter, 'Todos'> {
-  const normalized = normalizeText(value ?? '')
-  const number = normalized.match(/\d+/)?.[0]
-
-  if (number === '10' || /\bdecim[oa]\b/.test(normalized)) return '10°'
-  if (number === '11' || /\bonce\b|\bundecim[oa]\b/.test(normalized)) return '11°'
-  return 'Otros'
-}
-
 export default function Alertas() {
+  const navigate = useNavigate()
   const [alerts, setAlerts] = useState<ApiAlert[]>([])
   const [students, setStudents] = useState<ApiStudent[]>([])
   const [loading, setLoading] = useState(true)
@@ -82,7 +66,11 @@ export default function Alertas() {
   const [activeFilter, setActiveFilter] = useState<RiskFilter>('Todas')
   const [activeStatusFilter, setActiveStatusFilter] = useState<StatusFilter>('Todos')
   const [activeGradeFilter, setActiveGradeFilter] = useState<GradeFilter>('Todos')
+  const [currentPage, setCurrentPage] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+  const [totalElements, setTotalElements] = useState(0)
   const [formOpen, setFormOpen] = useState(false)
+  const [editingAlert, setEditingAlert] = useState<ApiAlert | null>(null)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
   const [selectedStudentId, setSelectedStudentId] = useState('')
@@ -97,54 +85,57 @@ export default function Alertas() {
   const [followUpError, setFollowUpError] = useState<Record<number, string>>({})
   const currentRole = getCurrentAuthUser()?.rol ?? 'docente'
 
-  /** Alertas, estudiantes y su nivel vigente se consultan desde SQL mediante la API. */
+  /** El listado principal ejecuta filtros, orden y paginación en PostgreSQL. */
   const loadData = useCallback(async () => {
     setLoading(true)
     setPageError('')
     try {
-      const [alertResults, studentResults] = await Promise.all([
-        alertasApiService.getAll(),
-        studentsApiService.getAll(),
-      ])
-      setAlerts(alertResults)
-      setStudents(studentResults.filter((student) => student.estado === 'activo'))
+      const nivelRiesgo: RiskLevel | undefined = activeFilter === 'Todas'
+        ? undefined
+        : activeFilter === 'Prioritarias' || activeFilter === 'Riesgo alto'
+          ? 'alto'
+          : activeFilter === 'Riesgo medio'
+            ? 'medio'
+            : activeFilter === 'Riesgo bajo'
+              ? 'bajo'
+              : 'sin_evaluar'
+      const grado = activeGradeFilter === '10°' ? '10' : activeGradeFilter === '11°' ? '11' : activeGradeFilter === 'Otros' ? '__otros__' : undefined
+      const result = await alertasApiService.getPage({
+        texto: search,
+        estado: activeStatusFilter === 'Todos' ? undefined : activeStatusFilter,
+        nivelRiesgo,
+        grado,
+        pagina: currentPage,
+        tamano: PAGE_SIZE,
+      })
+      setTotalPages(result.totalPages)
+      setTotalElements(result.totalElements)
+      if (currentPage > 0 && currentPage >= result.totalPages) {
+        setCurrentPage(Math.max(0, result.totalPages - 1))
+        return
+      }
+      setAlerts(result.content)
     } catch (error) {
       setPageError(errorMessage(error))
     } finally {
       setLoading(false)
     }
+  }, [activeFilter, activeGradeFilter, activeStatusFilter, currentPage, search])
+
+  const loadStudents = useCallback(async () => {
+    try {
+      const studentResults = await studentsApiService.getAll()
+      setStudents(studentResults.filter((student) => student.estado === 'activo'))
+    } catch (error) {
+      setPageError(errorMessage(error))
+    }
   }, [])
 
   useEffect(() => { void loadData() }, [loadData])
+  useEffect(() => { void loadStudents() }, [loadStudents])
 
-  /** Los cuatro criterios se combinan: una alerta debe cumplirlos todos. */
-  const filteredAlerts = useMemo(() => {
-    const query = normalizeText(search)
-
-    return alerts.filter((alert) => {
-      const matchesRisk =
-        activeFilter === 'Todas' ||
-        ((activeFilter === 'Prioritarias' || activeFilter === 'Riesgo alto') && alert.nivelRiesgo === 'alto') ||
-        (activeFilter === 'Riesgo medio' && alert.nivelRiesgo === 'medio') ||
-        (activeFilter === 'Riesgo bajo' && alert.nivelRiesgo === 'bajo') ||
-        (activeFilter === 'Sin evaluar' && alert.nivelRiesgo === 'sin_evaluar')
-
-      const matchesStatus = activeStatusFilter === 'Todos' || alert.estado === activeStatusFilter
-      const matchesGrade = activeGradeFilter === 'Todos' || normalizeGrade(alert.grado) === activeGradeFilter
-
-      const searchableText = normalizeText([
-        alert.nombreEstudiante,
-        alert.codigoEstudiantil,
-        alert.senal,
-        alert.grado ?? '',
-        alert.estado,
-        alert.nivelRiesgo,
-      ].join(' '))
-      const matchesSearch = !query || searchableText.includes(query)
-
-      return matchesRisk && matchesStatus && matchesGrade && matchesSearch
-    })
-  }, [alerts, activeFilter, activeStatusFilter, activeGradeFilter, search])
+  // Todos los filtros se ejecutan en PostgreSQL para mantener conteo y paginación coherentes.
+  const filteredAlerts = alerts
 
   const hasActiveFilters =
     Boolean(search.trim()) || activeFilter !== 'Todas' ||
@@ -155,14 +146,26 @@ export default function Alertas() {
     setActiveFilter('Todas')
     setActiveStatusFilter('Todos')
     setActiveGradeFilter('Todos')
+    setCurrentPage(0)
   }
 
   const openCreateForm = () => {
+    setEditingAlert(null)
     setFormError(''); setNotice(''); setPageError('')
     const firstStudent = students[0]
     setSelectedStudentId(firstStudent ? String(firstStudent.id) : '')
     setSignal('')
     setRisk(firstStudent?.nivelRiesgo ?? 'sin_evaluar')
+    setFormOpen(true)
+  }
+
+  const openEditForm = (alert: ApiAlert) => {
+    if (alert.estado === 'Archivada') return
+    setEditingAlert(alert)
+    setSelectedStudentId(String(alert.estudianteId))
+    setSignal(alert.senal)
+    setRisk(alert.nivelRiesgo)
+    setFormError(''); setNotice(''); setPageError('')
     setFormOpen(true)
   }
 
@@ -183,15 +186,23 @@ export default function Alertas() {
     }
     setSaving(true)
     try {
-      const created = await alertasApiService.create({
+      const payload = {
         estudianteId: Number(selectedStudentId),
         senal: signal.trim(),
         nivelRiesgo: risk,
-      })
-      setAlerts((current) => [created, ...current])
-      setNotice('La alerta se guardó en PostgreSQL.')
+      }
+      if (editingAlert) {
+        await alertasApiService.update(editingAlert.id, payload)
+        setNotice(`La alerta #${editingAlert.id} se actualizó en PostgreSQL.`)
+      } else {
+        await alertasApiService.create(payload)
+        setNotice('La alerta se guardó en PostgreSQL.')
+      }
       setFormOpen(false)
+      setEditingAlert(null)
       setSignal('')
+      if (currentPage === 0) await loadData()
+      else setCurrentPage(0)
     } catch (error) {
       setFormError(errorMessage(error))
     } finally {
@@ -200,12 +211,29 @@ export default function Alertas() {
   }
 
   /** Los cambios de estado se confirman primero en la API antes de actualizar React. */
-  const handleStatusChange = async (id: number, estado: AlertStatus) => {
+  const handleStatusChange = async (id: number, estado: Exclude<AlertStatus, 'Archivada'>) => {
     setStatusSavingId(id); setPageError(''); setNotice('')
     try {
-      const updated = await alertasApiService.updateStatus(id, estado)
-      setAlerts((current) => current.map((item) => item.id === id ? updated : item))
+      await alertasApiService.updateStatus(id, estado)
       setNotice(`La alerta #${id} quedó en estado «${estado}».`)
+      await loadData()
+    } catch (error) {
+      setPageError(errorMessage(error))
+    } finally {
+      setStatusSavingId(null)
+    }
+  }
+
+  const handleArchive = async (alert: ApiAlert) => {
+    if (alert.estado === 'Archivada') return
+    if (!window.confirm(`¿Archivar la alerta #${alert.id}? Se conservará su historial de seguimiento.`)) return
+    setStatusSavingId(alert.id)
+    setPageError(''); setNotice('')
+    try {
+      await alertasApiService.archive(alert.id)
+      setNotice(`La alerta #${alert.id} se archivó; no se borró físicamente.`)
+      if (alerts.length === 1 && currentPage > 0) setCurrentPage((page) => page - 1)
+      else await loadData()
     } catch (error) {
       setPageError(errorMessage(error))
     } finally {
@@ -272,12 +300,15 @@ export default function Alertas() {
                 </div>
                 <p style={{ color: '#CBD5E1', fontSize: 12, margin: '0 0 0 11px', lineHeight: 1.5 }}>Señales, riesgo y seguimiento registrados en SQL</p>
               </div>
-              <button type="button" onClick={openCreateForm} style={{ ...primaryButton, flexShrink: 0 }}>+ Nueva alerta</button>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+                <button type="button" onClick={() => navigate('/app/prediccion-riesgo')} style={{ ...secondaryButton, flexShrink: 0 }}>Evaluar con IA</button>
+                <button type="button" onClick={openCreateForm} style={{ ...primaryButton, flexShrink: 0 }}>+ Nueva alerta</button>
+              </div>
             </div>
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 16 }}>
-              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Activas</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{activeCount}</strong></div>
-              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Riesgo alto activo</span><strong style={{ display: 'block', color: '#FCA5A5', fontSize: 20 }}>{highCount}</strong></div>
-              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Total histórico</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{alerts.length}</strong></div>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Activas en página</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{activeCount}</strong></div>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Riesgo alto en página</span><strong style={{ display: 'block', color: '#FCA5A5', fontSize: 20 }}>{highCount}</strong></div>
+              <div style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 10, padding: '9px 12px', minWidth: 105 }}><span style={{ color: '#CBD5E1', fontSize: 11 }}>Resultados filtrados</span><strong style={{ display: 'block', color: '#FFFFFF', fontSize: 20 }}>{totalElements}</strong></div>
             </div>
           </div>
 
@@ -292,11 +323,11 @@ export default function Alertas() {
                 type="search"
                 aria-label="Buscar alertas por estudiante, código o señal"
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onChange={(event) => { setSearch(event.target.value); setCurrentPage(0) }}
                 placeholder="Buscar estudiante, código o señal..."
                 style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', color: COLORS.navy, fontSize: 13 }}
               />
-              {search && <button type="button" aria-label="Limpiar búsqueda" onClick={() => setSearch('')} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 18, cursor: 'pointer' }}>×</button>}
+              {search && <button type="button" aria-label="Limpiar búsqueda" onClick={() => { setSearch(''); setCurrentPage(0) }} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 18, cursor: 'pointer' }}>×</button>}
             </div>
 
             {/* Filtro de riesgo: conserva todos los niveles del sistema. */}
@@ -305,7 +336,7 @@ export default function Alertas() {
               <div className="no-scrollbar" style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
                 {RISK_FILTERS.map((filter) => {
                   const active = activeFilter === filter
-                  return <button key={filter} type="button" onClick={() => setActiveFilter(filter)} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#FFFFFF', color: active ? '#FFFFFF' : '#475569', border: active ? `1px solid ${COLORS.blue}` : `1px solid ${COLORS.border}`, borderRadius: 20, padding: '7px 13px', fontSize: 12, fontWeight: active ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{filter}</button>
+                  return <button key={filter} type="button" onClick={() => { setActiveFilter(filter); setCurrentPage(0) }} aria-pressed={active} style={{ flexShrink: 0, background: active ? COLORS.blue : '#FFFFFF', color: active ? '#FFFFFF' : '#475569', border: active ? `1px solid ${COLORS.blue}` : `1px solid ${COLORS.border}`, borderRadius: 20, padding: '7px 13px', fontSize: 12, fontWeight: active ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>{filter}</button>
                 })}
               </div>
             </div>
@@ -314,20 +345,20 @@ export default function Alertas() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginBottom: 14 }}>
               <div>
                 <label htmlFor="alert-status-filter" style={{ display: 'block', fontSize: 11, fontWeight: 700, color: COLORS.muted, marginBottom: 6 }}>Estado de la alerta</label>
-                <select id="alert-status-filter" value={activeStatusFilter} onChange={(event) => setActiveStatusFilter(event.target.value as StatusFilter)} style={{ ...fieldStyle, minHeight: 40 }}>
+                <select id="alert-status-filter" value={activeStatusFilter} onChange={(event) => { setActiveStatusFilter(event.target.value as StatusFilter); setCurrentPage(0) }} style={{ ...fieldStyle, minHeight: 40 }}>
                   {STATUS_FILTERS.map((status) => <option key={status} value={status}>{status === 'Todos' ? 'Todos los estados' : status}</option>)}
                 </select>
               </div>
               <div>
                 <label htmlFor="alert-grade-filter" style={{ display: 'block', fontSize: 11, fontWeight: 700, color: COLORS.muted, marginBottom: 6 }}>Curso o grado</label>
-                <select id="alert-grade-filter" value={activeGradeFilter} onChange={(event) => setActiveGradeFilter(event.target.value as GradeFilter)} style={{ ...fieldStyle, minHeight: 40 }}>
+                <select id="alert-grade-filter" value={activeGradeFilter} onChange={(event) => { setActiveGradeFilter(event.target.value as GradeFilter); setCurrentPage(0) }} style={{ ...fieldStyle, minHeight: 40 }}>
                   {GRADE_FILTERS.map((grade) => <option key={grade.value} value={grade.value}>{grade.label}</option>)}
                 </select>
               </div>
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
-              {!loading && <p style={{ fontSize: 12, color: COLORS.subtle, margin: 0 }}>{filteredAlerts.length} de {alerts.length} {alerts.length === 1 ? 'alerta' : 'alertas'} · ordenadas por fecha de creación</p>}
+              {!loading && <p style={{ fontSize: 12, color: COLORS.subtle, margin: 0 }}>Mostrando {filteredAlerts.length} de {totalElements} resultados · ordenados por fecha de creación</p>}
               {hasActiveFilters && <button type="button" onClick={clearFilters} style={{ ...secondaryButton, padding: '7px 10px' }}>Limpiar filtros</button>}
             </div>
 
@@ -339,7 +370,7 @@ export default function Alertas() {
                 const highRisk = alert.nivelRiesgo === 'alto'
                 const expanded = expandedFollowUpId === alert.id
                 const notes = followUps[alert.id] ?? []
-                const statusColor = alert.estado === 'Nueva' ? '#B45309' : alert.estado === 'En seguimiento' ? COLORS.blue : '#15803D'
+                const statusColor = alert.estado === 'Nueva' ? '#B45309' : alert.estado === 'En seguimiento' ? COLORS.blue : alert.estado === 'Archivada' ? '#64748B' : '#15803D'
                 const initials = alert.nombreEstudiante.split(/\s+/).slice(0, 2).map((part) => part[0] ?? '').join('').toUpperCase()
                 return <article key={alert.id} style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderLeft: highRisk ? `4px solid ${COLORS.riskHigh}` : `1px solid ${COLORS.border}`, borderRadius: 14, padding: 14, boxShadow: '0 1px 3px rgba(15,23,42,0.05)' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -359,11 +390,13 @@ export default function Alertas() {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8, marginTop: 13, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.muted, fontSize: 12 }}>Estado
-                      <select aria-label={`Cambiar estado de la alerta ${alert.id}`} disabled={statusSavingId === alert.id} value={alert.estado} onChange={(event) => void handleStatusChange(alert.id, event.target.value as AlertStatus)} style={{ ...fieldStyle, width: 'auto', minHeight: 34, padding: '6px 8px', fontSize: 12 }}>
-                        {STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+                      <select aria-label={`Cambiar estado de la alerta ${alert.id}`} disabled={statusSavingId === alert.id || alert.estado === 'Archivada'} value={alert.estado} onChange={(event) => void handleStatusChange(alert.id, event.target.value as Exclude<AlertStatus, 'Archivada'>)} style={{ ...fieldStyle, width: 'auto', minHeight: 34, padding: '6px 8px', fontSize: 12 }}>
+                        {alert.estado === 'Archivada' && <option value="Archivada">Archivada</option>}{STATUS_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
                       </select>
                     </label>
-                    <button type="button" onClick={() => void toggleFollowUps(alert.id)} style={secondaryButton}>{expanded ? 'Ocultar seguimiento' : 'Ver / agregar seguimiento'}</button>
+                    {alert.estado !== 'Archivada' && <button type="button" onClick={() => openEditForm(alert)} style={secondaryButton}>Editar alerta</button>}
+                    {alert.estado !== 'Archivada' && <button type="button" disabled={statusSavingId === alert.id} onClick={() => void handleArchive(alert)} style={{ ...secondaryButton, color: COLORS.riskHigh }}>{statusSavingId === alert.id ? 'Archivando…' : 'Archivar'}</button>}
+                    <button type="button" onClick={() => void toggleFollowUps(alert.id)} style={secondaryButton}>{expanded ? 'Ocultar seguimiento' : 'Ver seguimiento'}</button>
                   </div>
 
                   {expanded && <section aria-label={`Seguimientos de alerta ${alert.id}`} style={{ marginTop: 13, borderTop: `1px solid ${COLORS.border}`, paddingTop: 13 }}>
@@ -372,26 +405,36 @@ export default function Alertas() {
                     {followUpError[alert.id] && <p role="alert" style={{ color: COLORS.riskHigh, fontSize: 12 }}>{followUpError[alert.id]}</p>}
                     {!followUpLoadingId && notes.length === 0 && !followUpError[alert.id] && <p style={{ color: COLORS.subtle, fontSize: 12 }}>Todavía no hay observaciones registradas.</p>}
                     {notes.map((note) => <div key={note.id} style={{ padding: 10, borderRadius: 10, background: '#F8FAFC', marginBottom: 8 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}><strong style={{ color: COLORS.navy, fontSize: 12 }}>{note.responsable}</strong><span style={{ color: COLORS.subtle, fontSize: 10 }}>{formatDate(note.creadoEn)}</span></div><p style={{ whiteSpace: 'pre-wrap', color: '#475569', fontSize: 12, lineHeight: 1.5, margin: '6px 0 0' }}>{note.observaciones}</p></div>)}
-                    <label htmlFor={`follow-up-${alert.id}`} style={{ display: 'block', fontSize: 12, fontWeight: 600, color: COLORS.navy, margin: '12px 0 6px' }}>Nueva observación</label>
-                    <textarea id={`follow-up-${alert.id}`} rows={2} maxLength={1000} value={followUpDrafts[alert.id] ?? ''} onChange={(event) => setFollowUpDrafts((current) => ({ ...current, [alert.id]: event.target.value }))} placeholder="Registra la acción o contacto realizado..." style={{ ...fieldStyle, resize: 'vertical' }} />
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}><button type="button" style={primaryButton} disabled={followUpSavingId === alert.id} onClick={() => void handleAddFollowUp(alert.id)}>{followUpSavingId === alert.id ? 'Guardando...' : 'Guardar seguimiento'}</button></div>
+                    {alert.estado !== 'Archivada' && <>
+                      <label htmlFor={`follow-up-${alert.id}`} style={{ display: 'block', fontSize: 12, fontWeight: 600, color: COLORS.navy, margin: '12px 0 6px' }}>Nueva observación</label>
+                      <textarea id={`follow-up-${alert.id}`} rows={2} maxLength={1000} value={followUpDrafts[alert.id] ?? ''} onChange={(event) => setFollowUpDrafts((current) => ({ ...current, [alert.id]: event.target.value }))} placeholder="Registra la acción o contacto realizado..." style={{ ...fieldStyle, resize: 'vertical' }} />
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}><button type="button" style={primaryButton} disabled={followUpSavingId === alert.id} onClick={() => void handleAddFollowUp(alert.id)}>{followUpSavingId === alert.id ? 'Guardando...' : 'Guardar seguimiento'}</button></div>
+                    </>}
                   </section>}
                 </article>
               })}
             </div>
+
+            {!loading && !pageError && <div aria-label="Paginación de alertas" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
+              <span style={{ color: COLORS.muted, fontSize: 12 }}>Página {totalPages === 0 ? 0 : currentPage + 1} de {totalPages}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" disabled={currentPage === 0 || loading} onClick={() => setCurrentPage((page) => Math.max(0, page - 1))} style={{ ...secondaryButton, opacity: currentPage === 0 ? 0.5 : 1 }}>Anterior</button>
+                <button type="button" disabled={totalPages === 0 || currentPage + 1 >= totalPages || loading} onClick={() => setCurrentPage((page) => page + 1)} style={{ ...secondaryButton, opacity: totalPages === 0 || currentPage + 1 >= totalPages ? 0.5 : 1 }}>Siguiente</button>
+              </div>
+            </div>}
           </div>
         </div>
 
         {formOpen && <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(15,23,42,0.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' }}>
           <section role="dialog" aria-modal="true" aria-labelledby="alert-form-title" style={{ width: '100%', maxWidth: 460, maxHeight: '90vh', overflowY: 'auto', borderRadius: 18, background: '#FFFFFF', padding: 22, boxSizing: 'border-box', boxShadow: '0 20px 60px rgba(15,23,42,0.25)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', marginBottom: 16 }}><div><h2 id="alert-form-title" style={{ margin: 0, fontSize: 20, color: COLORS.navy }}>Nueva alerta</h2><p style={{ color: COLORS.muted, fontSize: 12, lineHeight: 1.5 }}>Se almacenará en la base de datos y quedará asociada a un estudiante.</p></div><button type="button" onClick={() => { if (!saving) setFormOpen(false) }} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 24, cursor: 'pointer' }} aria-label="Cerrar formulario">×</button></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start', marginBottom: 16 }}><div><h2 id="alert-form-title" style={{ margin: 0, fontSize: 20, color: COLORS.navy }}>{editingAlert ? `Editar alerta #${editingAlert.id}` : 'Nueva alerta'}</h2><p style={{ color: COLORS.muted, fontSize: 12, lineHeight: 1.5 }}>Se almacenará en la base de datos y quedará asociada a un estudiante.</p></div><button type="button" onClick={() => { if (!saving) { setFormOpen(false); setEditingAlert(null) } }} style={{ background: 'transparent', border: 'none', color: COLORS.muted, fontSize: 24, cursor: 'pointer' }} aria-label="Cerrar formulario">×</button></div>
             {formError && <p role="alert" style={{ color: '#991B1B', background: '#FEF2F2', borderRadius: 10, padding: 11, fontSize: 12 }}>{formError}</p>}
             {students.length === 0 && <p role="alert" style={{ color: '#92400E', background: '#FFFBEB', borderRadius: 10, padding: 11, fontSize: 12 }}>No hay estudiantes activos disponibles. Crea o reactiva una ficha antes de registrar una alerta.</p>}
             <form onSubmit={handleCreateAlert} style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
               <div><label htmlFor="alert-student" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Estudiante *</label><select id="alert-student" required value={selectedStudentId} onChange={(event) => { setSelectedStudentId(event.target.value); const student = students.find((item) => item.id === Number(event.target.value)); setRisk(student?.nivelRiesgo ?? 'sin_evaluar') }} style={fieldStyle}><option value="">Selecciona un estudiante</option>{students.map((student) => <option key={student.id} value={student.id}>{student.nombres} {student.apellidos} · {student.codigoEstudiantil}</option>)}</select></div>
               <div><label htmlFor="alert-risk" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Nivel de riesgo asociado</label><select id="alert-risk" value={risk} onChange={(event) => setRisk(event.target.value as RiskLevel)} style={fieldStyle}><option value="sin_evaluar">Sin evaluar</option><option value="bajo">Bajo</option><option value="medio">Medio</option><option value="alto">Alto</option></select><p style={{ color: COLORS.muted, fontSize: 11, lineHeight: 1.45, margin: '5px 0 0' }}>Se guarda como referencia del evento al momento de crear la alerta.</p></div>
               <div><label htmlFor="alert-signal" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: COLORS.navy, marginBottom: 6 }}>Señal detectada *</label><textarea id="alert-signal" required maxLength={500} rows={4} value={signal} onChange={(event) => setSignal(event.target.value)} placeholder="Ej. Aumento de ausencias sin justificar" style={{ ...fieldStyle, resize: 'vertical' }} /></div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => setFormOpen(false)} disabled={saving} style={secondaryButton}>Cancelar</button><button type="submit" disabled={saving || students.length === 0} style={{ ...primaryButton, opacity: saving || students.length === 0 ? 0.7 : 1 }}>{saving ? 'Guardando...' : 'Crear alerta'}</button></div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}><button type="button" onClick={() => { setFormOpen(false); setEditingAlert(null) }} disabled={saving} style={secondaryButton}>Cancelar</button><button type="submit" disabled={saving || students.length === 0} style={{ ...primaryButton, opacity: saving || students.length === 0 ? 0.7 : 1 }}>{saving ? 'Guardando...' : editingAlert ? 'Guardar cambios' : 'Crear alerta'}</button></div>
             </form>
           </section>
         </div>}
@@ -399,3 +442,6 @@ export default function Alertas() {
     </PhoneCenter>
   )
 }
+
+
+

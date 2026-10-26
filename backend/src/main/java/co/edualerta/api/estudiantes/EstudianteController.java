@@ -1,6 +1,8 @@
 package co.edualerta.api.estudiantes;
 
+import co.edualerta.api.riesgos.EvaluacionRiesgoResponse;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.Page;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -10,13 +12,13 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import co.edualerta.api.riesgos.EvaluacionRiesgoResponse;
 
 import java.net.URI;
 import java.util.List;
 
-/** Endpoints REST CRUD para la primera entidad conectada a PostgreSQL. */
+/** Endpoints REST paginados para las fichas de estudiantes y su historial. */
 @RestController
 @RequestMapping("/api/estudiantes")
 public class EstudianteController {
@@ -28,8 +30,15 @@ public class EstudianteController {
     }
 
     @GetMapping
-    public List<EstudianteResponse> listar() {
-        return estudianteService.listar();
+    public Page<EstudianteResponse> listar(
+            @RequestParam(required = false) String texto,
+            @RequestParam(required = false) String estado,
+            @RequestParam(required = false) String nivelRiesgo,
+            @RequestParam(required = false) String grado,
+            @RequestParam(defaultValue = "0") int pagina,
+            @RequestParam(defaultValue = "20") int tamano
+    ) {
+        return estudianteService.listar(texto, estado, nivelRiesgo, grado, pagina, tamano);
     }
 
     @GetMapping("/{id}")
@@ -56,6 +65,7 @@ public class EstudianteController {
         return estudianteService.actualizar(id, request);
     }
 
+    /** Baja lógica para conservar el historial y evitar inconsistencias referenciales. */
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> desactivar(@PathVariable Long id) {
         estudianteService.desactivar(id);

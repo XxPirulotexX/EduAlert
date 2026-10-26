@@ -53,6 +53,7 @@ public class AlertaTemprana {
                 case "nueva" -> "Nueva";
                 case "en seguimiento" -> "En seguimiento";
                 case "revisada" -> "Revisada";
+                case "archivada" -> "Archivada";
                 default -> estado.trim();
             };
         }
@@ -70,3 +71,6 @@ public class AlertaTemprana {
     public Instant getCreadoEn() { return creadoEn; }
     public Instant getActualizadoEn() { return actualizadoEn; }
 }
+
+
+

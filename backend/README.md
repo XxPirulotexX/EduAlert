@@ -1,104 +1,59 @@
-# EduAlerta API — entorno reproducible con Docker
+# EduAlerta — API REST y servicios locales
 
-**Estado:** base inicial de desarrollo. Incluye PostgreSQL 16, API Spring Boot, comprobación de conexión y CRUD de estudiantes. Aún no incluye autenticación real ni integración con las pantallas del frontend.
+**Entorno:** Spring Boot 3.5.x / Java 21, PostgreSQL 16, Flyway y un servicio ML experimental con FastAPI. El navegador consume la API Spring; no conecta directamente a PostgreSQL ni a FastAPI.
 
-## ¿Por qué PostgreSQL?
+## Arranque local
 
-EduAlerta contiene relaciones entre estudiantes, matrículas, rendimiento, asistencia, alertas, seguimientos e intentos vocacionales. PostgreSQL permite modelarlas mediante claves primarias y foráneas, restricciones e historial consistente. Para el alcance actual no hay una necesidad clara que justifique una base NoSQL.
-
-## Requisitos del equipo
-
-- Docker Desktop instalado y en ejecución (Windows suele utilizar el backend WSL 2).
-- Git para obtener el repositorio.
-- Node.js/npm para ejecutar el frontend.
-
-**No es necesario instalar Java ni Maven en Windows** para levantar la API con el flujo Docker de este documento: Maven compila el proyecto dentro de la imagen.
-
-## Primer inicio
-
-1. Desde la raíz del repositorio, abre una terminal en `backend/`.
-2. Copia el archivo de ejemplo y configura una contraseña local:
+1. Inicia Docker Desktop.
+2. En PowerShell, desde `backend/`, crea o revisa `backend/.env` a partir de la plantilla local disponible. No subas `.env` al repositorio.
+3. Asegúrate de definir `DB_NAME`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET` y `BOOTSTRAP_ADMIN_PASSWORD`. `JWT_SECRET` debe ser Base64 y decodificar al menos 32 bytes; cambia todas las credenciales de ejemplo. `JWT_TTL_SECONDS` y `BOOTSTRAP_ADMIN_*` permiten configurar la sesión y la cuenta inicial.
+4. Ejecuta:
 
    ```powershell
-   Copy-Item .env.example .env
-   ```
-
-   Edita `.env` y reemplaza `DB_PASSWORD`. No subas el archivo `.env` al repositorio.
-
-3. Construye la imagen y levanta la base de datos y la API:
-
-   ```powershell
-   docker compose up --build -d
-   ```
-
-4. Revisa los servicios:
-
-   ```powershell
+   docker compose up -d --build
    docker compose ps
-   docker compose logs -f api
+   Invoke-RestMethod "http://localhost:8080/api/health/db"
    ```
 
-5. Comprueba la conexión real de la API con PostgreSQL en:
+Las migraciones Flyway versionadas crean/validan el esquema e índices. La migración V4 usa `pg_trgm` para índices de búsqueda parcial; en una base administrada, un DBA puede tener que habilitar esa extensión antes de migrar.
 
-   `http://localhost:8080/api/health/db`
+Desde la raíz del proyecto, ejecuta `npm install` y `npm run dev` para iniciar el frontend. Por defecto, el cliente utiliza `http://localhost:8080/api`; personaliza `VITE_API_BASE_URL` si la API está en otra dirección.
 
-   Una respuesta correcta contiene `"status":"ok"` y `"database":"edualerta"`.
+## Endpoints principales
 
-## Comandos frecuentes
+| Método | Ruta | Resultado |
+|---|---|---|
+| GET/POST | `/api/estudiantes` | Consulta paginada / crea una ficha (201) |
+| GET/PUT/DELETE | `/api/estudiantes/{id}` | Lee, edita y da de baja lógicamente (204) |
+| GET/POST | `/api/alertas` | Consulta paginada / crea alerta (201) |
+| GET/PUT/PATCH/DELETE | `/api/alertas/{id}` y subrutas | Lee, edita, cambia estado y archiva (204) |
+| GET/POST/PUT/DELETE | `/api/resultados-academicos` y `/{id}` | CRUD paginado de resultados académicos |
+| GET/POST/PUT/DELETE | `/api/admin/usuarios` y `/{id}` | Consulta/crea/edita/desactiva cuentas (solo admin) |
+| POST | `/api/ml/modeling/predict` | Predicción de demostración protegida por roles |
+| GET | `/api/analitica/resumen` | KPI agregados sin materializar todos los registros en el navegador |
+| GET | `/api/health/db` | Diagnóstico de conexión con PostgreSQL |
+
+Los endpoints protegidos requieren `Authorization: Bearer <JWT>`. Las consultas paginadas usan `pagina` desde cero y `tamano` entre 1 y 100. Códigos típicos: 201 al crear, 204 al eliminar/archivar, 400 por validación, 401 sin sesión, 403 sin permiso, 404 si no existe el recurso y 409 por conflicto/duplicado.
+
+## Cuenta y protección
+
+Las contraseñas se guardan como hashes BCrypt. La API devuelve DTOs que no incluyen el hash. Las cuentas desactivadas no pueden iniciar sesión; la baja lógica mantiene su relación histórica. El CRUD de estudiantes también da de baja de forma lógica. Borrar una alerta la archiva para conservar seguimientos. Los resultados académicos se eliminan físicamente: definir una política de auditoría si el entorno requiere retención.
+
+## Machine learning: estado real
+
+FastAPI valida las ocho características del formulario de predicción. Si aún no hay un archivo de modelo, se genera un modelo determinista con datos sintéticos y se conserva en un volumen Docker. La pantalla `PrediccionRiesgo` llama a Spring Boot, muestra la respuesta/advertencia y permite crear una alerta con nivel `sin_evaluar` para revisión humana.
+
+El modelo no ha sido validado con resultados reales de estudiantes. Las métricas y salidas son demostrativas; no las utilices para decisiones reales de promoción, intervención o deserción.
+
+## Pruebas y operaciones
 
 ```powershell
-# Consultar estado
- docker compose ps
-
-# Ver los últimos registros de la API
- docker compose logs --tail=100 api
-
-# Reconstruir la API después de cambios de código
- docker compose up --build -d api
-
-# Detener contenedores sin borrar datos
- docker compose down
-
-# ¡PELIGRO! Detener y eliminar también el volumen con datos de PostgreSQL
- docker compose down -v
+# desde la raíz del proyecto
+docker compose -f ".\backend\compose.yaml" up -d --build api ml-service
+.\backend\scripts\test-acceptance.ps1
+.\backend\scripts\backup-db.ps1
 ```
 
-El volumen `edualerta_pgdata` conserva los datos aunque se eliminen y vuelvan a crear los contenedores. No ejecutes `docker compose down -v` si necesitas conservar la base local.
+Para restaurar, usa `backend/scripts/restore-db.ps1`; requiere confirmación interactiva y detiene temporalmente la API.
 
-## Trabajo en equipo
-
-- Se versionan `Dockerfile`, `compose.yaml`, código y `.env.example`.
-- Cada integrante crea su propio `.env`; este archivo está excluido de Git.
-- Cada computador tendrá su propia base local. Docker Compose **no sincroniza automáticamente los datos entre compañeros**. El esquema y los datos de prueba compartidos deberán entregarse mediante migraciones y scripts versionados, o mediante una base de desarrollo remota administrada por el equipo.
-- No incluyas datos personales reales ni credenciales en semillas, commits o capturas de pantalla.
-
-## CRUD de estudiantes
-
-Base URL: `http://localhost:8080/api/estudiantes`
-
-| Método | Ruta | Función |
-|---|---|---|
-| GET | `/api/estudiantes` | Lista estudiantes. |
-| GET | `/api/estudiantes/{id}` | Consulta por identificador. |
-| POST | `/api/estudiantes` | Crea una ficha con validación. |
-| PUT | `/api/estudiantes/{id}` | Actualiza una ficha con validación. |
-| DELETE | `/api/estudiantes/{id}` | Da de baja lógica cambiando el estado a inactivo. |
-
-Ejemplo de creación:
-
-```json
-{
-  "usuarioId": null,
-  "codigoEstudiantil": "EA-001",
-  "nombres": "Ana",
-  "apellidos": "Pérez",
-  "estado": "activo"
-}
-```
-
-## Seguridad y límites actuales
-
-- El CRUD todavía no tiene autenticación: solo debe usarse en desarrollo local.
-- `spring.jpa.hibernate.ddl-auto=update` está activo para facilitar el inicio. Antes de fijar el esquema de entrega se sustituirá por migraciones versionadas (por ejemplo, Flyway).
-- El CRUD cubre la ficha básica del estudiante; no sustituye todavía el modelo de rendimiento, asistencia, evaluación de riesgo y orientación definido en la documentación.
-- El frontend todavía no ha sido conectado a estos endpoints.
+Las pruebas de integración no sustituyen pruebas de carga, revisión de seguridad, restauraciones periódicas ni validación del modelo. La pantalla vocacional existente todavía persiste localmente en el navegador; sus resultados no se sincronizan entre dispositivos ni se guardan actualmente en PostgreSQL.

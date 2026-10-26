@@ -95,10 +95,63 @@ public class SecurityConfig {
                             .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
                         .requestMatchers(HttpMethod.POST, "/api/alertas", "/api/alertas/**")
                             .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+                        .requestMatchers(HttpMethod.PUT, "/api/alertas/**")
+                            .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
                         .requestMatchers(HttpMethod.PATCH, "/api/alertas/**")
                             .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+                        .requestMatchers(HttpMethod.DELETE, "/api/alertas/**")
+                            .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+                        // Consulta de resultados académicos: administración, docencia y orientación.
+                        .requestMatchers(
+                                HttpMethod.GET,
+                                "/api/resultados-academicos",
+                                "/api/resultados-academicos/**"
+                        )
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+
+                        // Registro de resultados académicos: administración y docencia.
+                        .requestMatchers(
+                                HttpMethod.POST,
+                                "/api/resultados-academicos",
+                                "/api/resultados-academicos/**"
+                        )
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE")
+                        .requestMatchers(
+                                HttpMethod.PUT,
+                                "/api/resultados-academicos",
+                                "/api/resultados-academicos/**"
+                        )
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE")
+                        .requestMatchers(
+                                HttpMethod.DELETE,
+                                "/api/resultados-academicos",
+                                "/api/resultados-academicos/**"
+                        )
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE")
+
                         // La gestión de cuentas es exclusiva de administración.
                         .requestMatchers("/api/admin/**").hasRole("ADMINISTRADOR")
+
+                        // El panel analítico devuelve únicamente agregados al personal autorizado.
+                        .requestMatchers(HttpMethod.GET, "/api/analitica/**")
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+
+                        // El entrenamiento experimental es exclusivo de administración.
+                        .requestMatchers(HttpMethod.POST, "/api/ml/modeling/train")
+                        .hasRole("ADMINISTRADOR")
+
+                        // El personal autorizado puede solicitar predicciones experimentales.
+                        .requestMatchers(HttpMethod.POST, "/api/ml/modeling/predict")
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+
+                        // Otros POST del módulo ML quedan reservados a administración.
+                        .requestMatchers(HttpMethod.POST, "/api/ml/**")
+                        .hasRole("ADMINISTRADOR")
+
+                        // Consultas de análisis y preparación para personal autorizado.
+                        .requestMatchers(HttpMethod.GET, "/api/ml/**")
+                        .hasAnyRole("ADMINISTRADOR", "DOCENTE", "ORIENTADOR")
+
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
@@ -117,3 +170,6 @@ public class SecurityConfig {
     }
 
 }
+
+
+

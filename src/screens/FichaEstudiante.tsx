@@ -51,11 +51,11 @@ export default function FichaEstudiante() {
     try {
       const [studentResult, alertResults, historyResults] = await Promise.all([
         studentsApiService.getById(studentId),
-        alertasApiService.getAll(),
+        alertasApiService.getForStudent(studentId),
         studentsApiService.getRiskHistory(studentId),
       ])
       setStudent(studentResult)
-      setAlerts(alertResults.filter((alert) => alert.estudianteId === studentId))
+      setAlerts(alertResults)
       setRiskHistory(historyResults)
     } catch (cause) {
       setStudent(null)
@@ -134,3 +134,6 @@ const cardStyle = { background: '#FFFFFF', border: `1px solid ${COLORS.border}`,
 const captionStyle = { display: 'block', color: COLORS.subtle, fontSize: 11, fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.04em' }
 const valueStyle = { display: 'block', color: COLORS.navy, fontSize: 22, fontWeight: 700, marginTop: 8 }
 const noteStyle = { color: COLORS.subtle, fontSize: 11, lineHeight: 1.5, margin: '6px 0 0' }
+
+
+

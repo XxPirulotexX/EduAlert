@@ -1,0 +1,8 @@
+id,actualizado_en,creado_en,estado,nivel_riesgo,senal,estudiante_id
+4,,2026-10-14 06:03:17.918683+00,En seguimiento,medio,Revisar variaci??n reciente en asistencia.,5
+6,,2026-10-14 06:03:17.918683+00,Nueva,alto,Variaci??n reciente en rendimiento y asistencia.,4
+1,2026-10-14 06:05:37.329039+00,2026-10-14 06:03:17.918683+00,En seguimiento,alto,Ausencias consecutivas registradas en el ejemplo.,11
+2,2026-10-14 06:08:41.713029+00,2026-10-14 06:03:17.918683+00,En seguimiento,medio,Variaci??n en registros de asistencia.,9
+3,2026-10-14 06:08:51.375779+00,2026-10-14 06:03:17.918683+00,Revisada,alto,Descenso de resultados en evaluaciones recientes.,8
+7,,2026-10-14 06:13:04.220297+00,Nueva,bajo,Aumento su asistencia despues de hablar con acudiente,9
+5,2026-10-14 06:19:50.209767+00,2026-10-14 06:03:17.918683+00,Revisada,alto,Promedio bajo que requiere acompa??amiento.,6

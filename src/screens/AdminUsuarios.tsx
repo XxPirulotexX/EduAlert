@@ -3,11 +3,13 @@ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type For
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
 import { ApiClientError, apiRequest } from '../services/api-client.service'
-import { studentsApiService, type ApiStudent } from '../services/students-api.service'
+import { studentsApiService, type ApiPage, type ApiStudent } from '../services/students-api.service'
+import { getCurrentAuthUser } from '../services/auth.service'
 import { COLORS, FONT } from '../theme'
 
 type UserRole = 'administrador' | 'docente' | 'orientador' | 'estudiante'
 type NewUserRole = Exclude<UserRole, 'administrador'>
+type AccountStatus = 'activo' | 'inactivo'
 
 type ManagedUser = {
   id: number
@@ -26,6 +28,15 @@ type CreateUserRequest = {
   correo: string
   password: string
   rol: NewUserRole
+  estudianteId: number | null
+}
+
+type UpdateUserRequest = {
+  nombres: string
+  apellidos: string
+  correo: string
+  rol: NewUserRole
+  estado: AccountStatus
   estudianteId: number | null
 }
 
@@ -94,7 +105,13 @@ export default function AdminUsuarios() {
   const [formError, setFormError] = useState('')
   const [notice, setNotice] = useState('')
   const [search, setSearch] = useState('')
+  const [currentPage, setCurrentPage] = useState(0)
+  const [totalPages, setTotalPages] = useState(0)
+  const [totalUsers, setTotalUsers] = useState(0)
   const [formOpen, setFormOpen] = useState(false)
+  const [editingUser, setEditingUser] = useState<ManagedUser | null>(null)
+  const [estado, setEstado] = useState<AccountStatus>('activo')
+  const authenticatedUser = getCurrentAuthUser()
 
   const [nombres, setNombres] = useState('')
   const [apellidos, setApellidos] = useState('')
@@ -103,40 +120,42 @@ export default function AdminUsuarios() {
   const [rol, setRol] = useState<NewUserRole>('docente')
   const [estudianteId, setEstudianteId] = useState('')
 
-  /** Recarga ambos catálogos desde el backend autenticado. */
+  /** Recarga la página solicitada y el catálogo de fichas desde el backend autenticado. */
   const loadData = useCallback(async () => {
     setLoading(true)
     setPageError('')
     try {
+      const params = new URLSearchParams({ pagina: String(currentPage), tamano: '10' })
+      if (search.trim()) params.set('texto', search.trim())
       const [usersResult, studentsResult] = await Promise.all([
-        apiRequest<ManagedUser[]>('/admin/usuarios'),
+        apiRequest<ApiPage<ManagedUser>>(`/admin/usuarios?${params.toString()}`),
         studentsApiService.getAll(),
       ])
-      setUsers(usersResult)
-      // Solo se puede vincular una cuenta con una ficha activa y sin usuario.
-      setAvailableStudents(
-        studentsResult.filter((student) => student.estado === 'activo' && student.usuarioId === null),
-      )
+      setTotalPages(usersResult.totalPages)
+      setTotalUsers(usersResult.totalElements)
+      if (currentPage > 0 && currentPage >= usersResult.totalPages) {
+        setCurrentPage(Math.max(0, usersResult.totalPages - 1))
+      } else {
+        setUsers(usersResult.content)
+      }
+      // El formulario filtra fichas activas/no vinculadas; en edición mantiene visible la ficha propia.
+      setAvailableStudents(studentsResult)
     } catch (error) {
       setPageError(errorMessage(error))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [currentPage, search])
 
   useEffect(() => {
     void loadData()
   }, [loadData])
 
-  const filteredUsers = useMemo(() => {
-    const query = search.trim().toLocaleLowerCase('es')
-    if (!query) return users
-    return users.filter((user) =>
-      `${user.nombres} ${user.apellidos} ${user.correo} ${ROLE_LABELS[user.rol]}`
-        .toLocaleLowerCase('es')
-        .includes(query),
-    )
-  }, [users, search])
+  // No se vuelve a filtrar en memoria: la búsqueda ya fue aplicada por PostgreSQL.
+  const filteredUsers = users
+  const selectableStudents = availableStudents.filter((student) =>
+    student.estado === 'activo' && (student.usuarioId === null || student.usuarioId === editingUser?.id),
+  )
 
   const resetForm = () => {
     setNombres('')
@@ -145,6 +164,8 @@ export default function AdminUsuarios() {
     setPassword('')
     setRol('docente')
     setEstudianteId('')
+    setEstado('activo')
+    setEditingUser(null)
     setFormError('')
   }
 
@@ -154,51 +175,68 @@ export default function AdminUsuarios() {
     resetForm()
   }
 
-  const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
+  const startEdit = (user: ManagedUser) => {
+    if (user.rol === 'administrador' || user.correo.toLowerCase() === authenticatedUser?.correo.toLowerCase()) return
+    setEditingUser(user)
+    setNombres(user.nombres)
+    setApellidos(user.apellidos)
+    setCorreo(user.correo)
+    setPassword('')
+    setRol(user.rol as NewUserRole)
+    setEstado(user.estado === 'inactivo' ? 'inactivo' : 'activo')
+    setEstudianteId(user.estudianteId === null ? '' : String(user.estudianteId))
+    setFormError('')
+    setNotice('')
+    setFormOpen(true)
+  }
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setFormError('')
     setNotice('')
 
     // Validación temprana; el backend vuelve a validar todos los campos.
-    if (!nombres.trim() || !apellidos.trim() || !correo.trim() || !password) {
+    if (!nombres.trim() || !apellidos.trim() || !correo.trim() || (!editingUser && !password)) {
       setFormError('Completa todos los campos obligatorios.')
       return
     }
-    if (password.length < 10 || password.length > 72) {
+    if (!editingUser && (password.length < 10 || password.length > 72)) {
       setFormError('La contraseña debe tener entre 10 y 72 caracteres.')
       return
     }
     if (rol === 'estudiante' && !estudianteId) {
-      setFormError('Selecciona una ficha activa que no esté vinculada a otra cuenta.')
+      setFormError('Selecciona una ficha de estudiante activa disponible para vincular.')
       return
     }
 
-    const payload: CreateUserRequest = {
+    const common = {
       nombres: nombres.trim(),
       apellidos: apellidos.trim(),
       correo: correo.trim().toLowerCase(),
-      password,
       rol,
       estudianteId: rol === 'estudiante' ? Number(estudianteId) : null,
     }
 
     setSaving(true)
     try {
-      const created = await apiRequest<ManagedUser>('/admin/usuarios', {
-        method: 'POST',
-        body: JSON.stringify(payload),
-      })
-      setUsers((current) =>
-        [...current, created].sort((a, b) =>
-          `${a.apellidos} ${a.nombres}`.localeCompare(`${b.apellidos} ${b.nombres}`, 'es'),
-        ),
-      )
-      setNotice(`La cuenta de ${created.nombres} ${created.apellidos} se creó correctamente.`)
+      if (editingUser) {
+        const payload: UpdateUserRequest = { ...common, estado }
+        const updated = await apiRequest<ManagedUser>(`/admin/usuarios/${editingUser.id}`, {
+          method: 'PUT', body: JSON.stringify(payload),
+        })
+        setNotice(`La cuenta de ${updated.nombres} ${updated.apellidos} se actualizó correctamente.`)
+      } else {
+        const payload: CreateUserRequest = { ...common, password }
+        const created = await apiRequest<ManagedUser>('/admin/usuarios', {
+          method: 'POST', body: JSON.stringify(payload),
+        })
+        setNotice(`La cuenta de ${created.nombres} ${created.apellidos} se creó correctamente.`)
+      }
       setFormOpen(false)
       resetForm()
-      // Recarga fichas disponibles para que la misma ficha no aparezca seleccionable dos veces.
-      const students = await studentsApiService.getAll()
-      setAvailableStudents(students.filter((student) => student.estado === 'activo' && student.usuarioId === null))
+      if (currentPage === 0) await loadData()
+      else setCurrentPage(0)
+      setAvailableStudents(await studentsApiService.getAll())
     } catch (error) {
       if (error instanceof ApiClientError && error.status === 409) {
         setFormError(error.message)
@@ -207,6 +245,21 @@ export default function AdminUsuarios() {
       }
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleDeactivate = async (user: ManagedUser) => {
+    if (user.rol === 'administrador' || user.correo.toLowerCase() === authenticatedUser?.correo.toLowerCase()) return
+    if (user.estado === 'inactivo') return
+    if (!window.confirm(`¿Desactivar la cuenta de ${user.nombres} ${user.apellidos}? Se conservará el historial y no podrá iniciar sesión.`)) return
+    setPageError('')
+    setNotice('')
+    try {
+      await apiRequest<void>(`/admin/usuarios/${user.id}`, { method: 'DELETE' })
+      setNotice(`La cuenta de ${user.correo} quedó inactiva.`)
+      await loadData()
+    } catch (error) {
+      setPageError(errorMessage(error))
     }
   }
 
@@ -233,10 +286,10 @@ export default function AdminUsuarios() {
                   Administración de usuarios
                 </h1>
                 <p style={{ color: COLORS.muted, fontSize: 13, margin: '6px 0 0', lineHeight: 1.5 }}>
-                  Crea cuentas y asigna el rol correspondiente.
+                  Crea, edita y desactiva cuentas; los permisos se verifican en el servidor.
                 </p>
               </div>
-              <button type="button" onClick={() => { resetForm(); setFormOpen(true) }} style={primaryButton}>
+              <button type="button" onClick={() => { resetForm(); setEditingUser(null); setEstado('activo'); setFormOpen(true) }} style={primaryButton}>
                 + Nueva cuenta
               </button>
             </div>
@@ -246,7 +299,7 @@ export default function AdminUsuarios() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(115px, 1fr))', gap: 10, marginBottom: 18 }}>
               {(['administrador', 'docente', 'orientador', 'estudiante'] as UserRole[]).map((role) => (
                 <div key={role} style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 13, padding: 13 }}>
-                  <p style={{ color: COLORS.muted, fontSize: 11, margin: '0 0 6px' }}>{ROLE_LABELS[role]}</p>
+                  <p style={{ color: COLORS.muted, fontSize: 11, margin: '0 0 6px' }}>{ROLE_LABELS[role]} en página</p>
                   <p style={{ color: COLORS.navy, fontSize: 22, fontWeight: 700, margin: 0 }}>{roleCounts[role]}</p>
                 </div>
               ))}
@@ -263,7 +316,7 @@ export default function AdminUsuarios() {
             <label htmlFor="user-search" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>
               Buscar cuentas
             </label>
-            <input id="user-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nombre, correo o rol..." style={{ ...fieldStyle, marginBottom: 14 }} />
+            <input id="user-search" type="search" value={search} onChange={(event) => { setSearch(event.target.value); setCurrentPage(0) }} placeholder="Nombre, correo o rol..." style={{ ...fieldStyle, marginBottom: 14 }} />
 
             {loading ? (
               <p role="status" style={{ padding: 22, textAlign: 'center', color: COLORS.muted, fontSize: 13 }}>Cargando cuentas...</p>
@@ -282,9 +335,20 @@ export default function AdminUsuarios() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ borderRadius: 20, padding: '5px 9px', color: COLORS.blue, background: COLORS.lightBlue, fontSize: 11, fontWeight: 700 }}>{ROLE_LABELS[user.rol]}</span>
                   <span style={{ borderRadius: 20, padding: '5px 9px', color: user.estado === 'activo' ? '#166534' : '#64748B', background: user.estado === 'activo' ? '#F0FDF4' : '#F1F5F9', fontSize: 11, fontWeight: 700 }}>{user.estado}</span>
+                  {user.rol !== 'administrador' && user.correo.toLowerCase() !== authenticatedUser?.correo.toLowerCase() && <>
+                    <button type="button" onClick={() => startEdit(user)} style={secondaryButton}>Editar</button>
+                    {user.estado === 'activo' && <button type="button" onClick={() => void handleDeactivate(user)} style={{ ...secondaryButton, color: COLORS.riskHigh }}>Desactivar</button>}
+                  </>}
                 </div>
               </article>
             ))}
+            {!loading && !pageError && <div aria-label="Paginación de usuarios" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginTop: 14, paddingTop: 12, borderTop: `1px solid ${COLORS.border}` }}>
+              <span style={{ color: COLORS.muted, fontSize: 12 }}>Total: {totalUsers} cuentas · Página {totalPages === 0 ? 0 : currentPage + 1} de {totalPages}</span>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" disabled={currentPage === 0 || loading} onClick={() => setCurrentPage((page) => Math.max(0, page - 1))} style={secondaryButton}>Anterior</button>
+                <button type="button" disabled={totalPages === 0 || currentPage + 1 >= totalPages || loading} onClick={() => setCurrentPage((page) => page + 1)} style={secondaryButton}>Siguiente</button>
+              </div>
+            </div>}
           </div>
         </div>
 
@@ -293,7 +357,7 @@ export default function AdminUsuarios() {
             <section role="dialog" aria-modal="true" aria-labelledby="new-user-title" style={{ width: '100%', maxWidth: 480, maxHeight: '90vh', overflowY: 'auto', boxSizing: 'border-box', background: '#FFFFFF', borderRadius: 18, padding: 22, boxShadow: '0 20px 60px rgba(15,23,42,0.25)' }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 18 }}>
                 <div>
-                  <h2 id="new-user-title" style={{ color: COLORS.navy, fontSize: 20, fontWeight: 700, margin: 0 }}>Crear cuenta</h2>
+                  <h2 id="new-user-title" style={{ color: COLORS.navy, fontSize: 20, fontWeight: 700, margin: 0 }}>{editingUser ? `Editar cuenta #${editingUser.id}` : 'Crear cuenta'}</h2>
                   <p style={{ color: COLORS.muted, fontSize: 12, lineHeight: 1.5, margin: '6px 0 0' }}>El rol se asigna en el servidor y no podrá elegirse desde el login.</p>
                 </div>
                 <button type="button" onClick={closeForm} disabled={saving} aria-label="Cerrar formulario" style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: COLORS.muted, fontSize: 24 }}>×</button>
@@ -301,7 +365,7 @@ export default function AdminUsuarios() {
 
               {formError && <div role="alert" style={{ marginBottom: 14, borderRadius: 10, background: '#FEF2F2', color: '#991B1B', padding: 12, fontSize: 12, lineHeight: 1.5 }}>{formError}</div>}
 
-              <form onSubmit={handleCreate} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+              <form onSubmit={handleSave} noValidate style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
                 <div>
                   <label htmlFor="account-names" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Nombres *</label>
                   <input id="account-names" value={nombres} onChange={(event) => setNombres(event.target.value)} maxLength={100} autoComplete="given-name" required style={fieldStyle} />
@@ -314,36 +378,44 @@ export default function AdminUsuarios() {
                   <label htmlFor="account-email" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Correo electrónico *</label>
                   <input id="account-email" type="email" value={correo} onChange={(event) => setCorreo(event.target.value)} maxLength={254} autoComplete="email" required style={fieldStyle} />
                 </div>
-                <div>
+                {!editingUser && <div>
                   <label htmlFor="account-password" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Contraseña inicial *</label>
                   <input id="account-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={72} autoComplete="new-password" required style={fieldStyle} />
-                  <p style={{ margin: '5px 0 0', color: COLORS.muted, fontSize: 11 }}>Entre 10 y 72 caracteres. Comunica la contraseña inicial por un canal seguro.</p>
-                </div>
+                  <p style={{ margin: '5px 0 0', color: COLORS.muted, fontSize: 11 }}>Entre 10 y 72 caracteres. Comunica la contraseña inicial por un canal seguro. La edición no cambia contraseñas.</p>
+                </div>}
                 <div>
                   <label htmlFor="account-role" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Rol *</label>
-                  <select id="account-role" value={rol} onChange={(event) => { setRol(event.target.value as NewUserRole); setEstudianteId('') }} style={fieldStyle}>
+                  <select id="account-role" value={rol} onChange={(event) => { const nextRole = event.target.value as NewUserRole; setRol(nextRole); if (nextRole !== 'estudiante') setEstudianteId('') }} style={fieldStyle}>
                     <option value="docente">Docente</option>
                     <option value="orientador">Orientador</option>
                     <option value="estudiante">Estudiante</option>
                   </select>
                 </div>
 
+                {editingUser && <div>
+                  <label htmlFor="account-state" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Estado de la cuenta *</label>
+                  <select id="account-state" value={estado} onChange={(event) => setEstado(event.target.value as AccountStatus)} style={fieldStyle}>
+                    <option value="activo">Activa</option>
+                    <option value="inactivo">Inactiva</option>
+                  </select>
+                </div>}
+
                 {rol === 'estudiante' && (
                   <div>
                     <label htmlFor="account-student" style={{ display: 'block', color: COLORS.navy, fontWeight: 600, fontSize: 12, marginBottom: 6 }}>Ficha de estudiante activa *</label>
                     <select id="account-student" value={estudianteId} onChange={(event) => setEstudianteId(event.target.value)} required style={fieldStyle}>
-                      <option value="">Selecciona una ficha sin cuenta vinculada</option>
-                      {availableStudents.map((student) => (
-                        <option key={student.id} value={student.id}>{student.codigoEstudiantil} · {student.nombres} {student.apellidos}</option>
+                      <option value="">Selecciona una ficha activa sin otra cuenta</option>
+                      {selectableStudents.map((student) => (
+                        <option key={student.id} value={student.id}>{student.codigoEstudiantil} · {student.nombres} {student.apellidos}{student.usuarioId === editingUser?.id ? ' · vinculada a esta cuenta' : ''}</option>
                       ))}
                     </select>
-                    {availableStudents.length === 0 && <p style={{ color: '#B91C1C', fontSize: 11, margin: '6px 0 0' }}>No hay fichas activas disponibles. Crea o activa una ficha sin cuenta vinculada antes de continuar.</p>}
+                    {selectableStudents.length === 0 && <p style={{ color: '#B91C1C', fontSize: 11, margin: '6px 0 0' }}>No hay fichas activas disponibles. Crea o activa una ficha sin cuenta vinculada antes de continuar.</p>}
                   </div>
                 )}
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', marginTop: 5 }}>
                   <button type="button" onClick={closeForm} disabled={saving} style={secondaryButton}>Cancelar</button>
-                  <button type="submit" disabled={saving || (rol === 'estudiante' && availableStudents.length === 0)} style={{ ...primaryButton, minWidth: 135, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Creando cuenta...' : 'Crear cuenta'}</button>
+                  <button type="submit" disabled={saving || (rol === 'estudiante' && selectableStudents.length === 0 && !estudianteId)} style={{ ...primaryButton, minWidth: 135, cursor: saving ? 'wait' : 'pointer', opacity: saving ? 0.7 : 1 }}>{saving ? 'Guardando...' : editingUser ? 'Guardar cambios' : 'Crear cuenta'}</button>
                 </div>
               </form>
             </section>
@@ -353,3 +425,6 @@ export default function AdminUsuarios() {
     </PhoneCenter>
   )
 }
+
+
+

@@ -38,6 +38,10 @@ public class GlobalExceptionHandler {
             case 403 -> "FORBIDDEN";
             case 404 -> "NOT_FOUND";
             case 409 -> "CONFLICT";
+            case 422 -> "UNPROCESSABLE_ENTITY";
+            case 429 -> "RATE_LIMITED";
+            case 502 -> "ML_BAD_GATEWAY";
+            case 503 -> "SERVICE_UNAVAILABLE";
             default -> "REQUEST_ERROR";
         };
         String message = exception.getReason() == null
@@ -57,3 +61,6 @@ public class GlobalExceptionHandler {
         ));
     }
 }
+
+
+

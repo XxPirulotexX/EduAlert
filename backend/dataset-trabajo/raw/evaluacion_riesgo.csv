@@ -1,0 +1,21 @@
+id,creado_en,fuente,nivel,observaciones,version_modelo,estudiante_id
+1,2026-10-14 06:03:17.904402+00,DEMO,medio,Variaci??n reciente del rendimiento. Registro demostrativo.,,4
+2,2026-10-14 06:03:17.904402+00,DEMO,bajo,Sin se??ales prioritarias registradas en este ejemplo.,,5
+3,2026-10-14 06:03:17.904402+00,DEMO,alto,Promedio actual inferior al objetivo de referencia del ejemplo.,,6
+4,2026-10-14 06:03:17.904402+00,DEMO,bajo,Sin se??ales prioritarias registradas en este ejemplo.,,7
+5,2026-10-14 06:03:17.904402+00,DEMO,alto,Requiere revisi??n humana de su situaci??n acad??mica.,,8
+6,2026-10-14 06:03:17.904402+00,DEMO,medio,Variaci??n de asistencia para revisar.,,9
+7,2026-10-14 06:03:17.904402+00,DEMO,bajo,Sin se??ales prioritarias registradas en este ejemplo.,,10
+8,2026-10-14 06:03:17.904402+00,DEMO,alto,Promedio actual inferior al objetivo de referencia del ejemplo.,,11
+9,2026-10-14 06:03:17.904402+00,DEMO,bajo,Sin se??ales prioritarias registradas en este ejemplo.,,12
+10,2026-10-14 06:03:17.904402+00,DEMO,medio,Se recomienda revisar la evoluci??n acad??mica.,,13
+11,2026-10-14 06:03:17.904402+00,DEMO,alto,Requiere revisi??n humana de su situaci??n acad??mica.,,14
+12,2026-10-14 06:03:17.904402+00,DEMO,bajo,Sin se??ales prioritarias registradas en este ejemplo.,,15
+13,2026-10-14 06:11:00.188623+00,MANUAL,bajo,"Un promedio normal, no representa riesgos",,16
+14,2026-10-14 06:12:09.166681+00,MANUAL,bajo,Variación de asistencia revisada,,9
+15,2026-10-14 06:14:12.612976+00,MANUAL,alto,Requiere revisión humana de su situacion academica.,,8
+16,2026-10-14 06:17:56.614027+00,MANUAL,bajo,Sin señales prioritarias registradas en este ejemplo.,,12
+17,2026-10-14 06:18:12.311764+00,MANUAL,bajo,Sin señales prioritarias registradas en este ejemplo.,,5
+18,2026-10-14 06:18:17.478814+00,MANUAL,medio,,,13
+19,2026-10-14 06:18:34.792079+00,MANUAL,medio,Variación reciente del rendimiento. Registro demostrativo.,,4
+20,2026-10-14 06:19:03.951356+00,MANUAL,alto,Requiere revisión humana de su situación académica.,,14

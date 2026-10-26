@@ -40,9 +40,35 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-admin@edualerta.local}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?Agrega BOOTSTRAP_ADMIN_PASSWORD a backend/.env}
       BOOTSTRAP_ADMIN_NOMBRES: ${BOOTSTRAP_ADMIN_NOMBRES:-Administrador}
-      BOOTSTRAP_ADMIN_APELLIDOS: ${BOOTSTRAP_ADMIN_APELLIDOS:-EduAlerta}
+      BOOTSTRAP_ADMIN_APELLIDOS: ${BOOTSTRAP_ADMIN_APELLIDOS:-EduAlerta}  
+      ML_SERVICE_BASE_URL: http://ml-service:8000
     ports:
       - "8080:8080"
-
+      
+  ml-service:
+    build:
+      context: .
+      dockerfile: ml-service/Dockerfile
+    container_name: edualerta-ml-service
+    restart: unless-stopped
+    environment:
+      MODEL_DIR: /ml-models
+    # La ruta del modelo es explícita y no depende del WORKDIR interno de la imagen.
+    # Si falta el modelo, FastAPI lo regenera a partir de datos sintéticos reproducibles.
+    volumes:
+      - edualerta_ml_models:/ml-models
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
 volumes:
   edualerta_pgdata:
+  edualerta_ml_models:
+
+
+

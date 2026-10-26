@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Cell,
   Pie,
@@ -10,35 +11,42 @@ import {
 import PhoneFrame, { PhoneCenter } from '../components/PhoneFrame'
 import BottomNav from '../components/BottomNav'
 import SectionTitle from '../components/SectionTitle'
-import { alertasApiService, type ApiAlert } from '../services/alertas-api.service'
-import { studentsApiService, type ApiStudent } from '../services/students-api.service'
+import { apiRequest, ApiClientError } from '../services/api-client.service'
 import { getCurrentAuthUser } from '../services/auth.service'
 import { COLORS } from '../theme'
 import type { Role } from '../types'
 
+type AnalyticsSummary = {
+  totalFichas: number
+  fichasActivas: number
+  promedioActual: number | null
+  fichasConPromedio: number
+  alertasActivas: number
+  alertasRiesgoAltoActivas: number
+  alertasHistoricas: number
+  distribucionRiesgo: Record<'bajo' | 'medio' | 'alto' | 'sin_evaluar', number>
+  distribucionAlertas: Record<'Nueva' | 'En seguimiento' | 'Revisada', number>
+}
+
 function getMessage(error: unknown) {
+  if (error instanceof ApiClientError) return error.message
   return error instanceof Error ? error.message : 'No fue posible cargar los indicadores.'
 }
 
-/** Analítica derivada de estudiantes y alertas guardados en PostgreSQL. */
+/** Analítica agregada en PostgreSQL: el navegador no descarga todas las filas para contar. */
 export default function Analitica() {
-  const [students, setStudents] = useState<ApiStudent[]>([])
-  const [alerts, setAlerts] = useState<ApiAlert[]>([])
+  const [metrics, setMetrics] = useState<AnalyticsSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const user = getCurrentAuthUser()
   const currentRole: Role = user?.rol ?? 'docente'
+  const navigate = useNavigate()
 
   const loadData = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [studentResults, alertResults] = await Promise.all([
-        studentsApiService.getAll(),
-        alertasApiService.getAll(),
-      ])
-      setStudents(studentResults)
-      setAlerts(alertResults)
+      setMetrics(await apiRequest<AnalyticsSummary>('/analitica/resumen'))
     } catch (cause) {
       setError(getMessage(cause))
     } finally {
@@ -48,31 +56,29 @@ export default function Analitica() {
 
   useEffect(() => { void loadData() }, [loadData])
 
-  const activeStudents = students.filter((student) => student.estado === 'activo')
-  const activeAlerts = alerts.filter((alert) => alert.estado !== 'Revisada')
-  const averages = activeStudents.filter((student) => student.promedioActual !== null)
-  const average = averages.length
-    ? averages.reduce((sum, student) => sum + Number(student.promedioActual), 0) / averages.length
-    : null
-
-  const riskData = useMemo(() => [
-    { name: 'Riesgo bajo', key: 'bajo', value: activeStudents.filter((student) => student.nivelRiesgo === 'bajo').length, color: COLORS.riskLow },
-    { name: 'Riesgo medio', key: 'medio', value: activeStudents.filter((student) => student.nivelRiesgo === 'medio').length, color: COLORS.riskMid },
-    { name: 'Riesgo alto', key: 'alto', value: activeStudents.filter((student) => student.nivelRiesgo === 'alto').length, color: COLORS.riskHigh },
-    { name: 'Sin evaluar', key: 'sin_evaluar', value: activeStudents.filter((student) => student.nivelRiesgo === 'sin_evaluar').length, color: '#94A3B8' },
-  ], [activeStudents])
+  const riskData = useMemo(() => {
+    const distribution = metrics?.distribucionRiesgo
+    return [
+      { name: 'Riesgo bajo', key: 'bajo', value: distribution?.bajo ?? 0, color: COLORS.riskLow },
+      { name: 'Riesgo medio', key: 'medio', value: distribution?.medio ?? 0, color: COLORS.riskMid },
+      { name: 'Riesgo alto', key: 'alto', value: distribution?.alto ?? 0, color: COLORS.riskHigh },
+      { name: 'Sin evaluar', key: 'sin_evaluar', value: distribution?.sin_evaluar ?? 0, color: '#94A3B8' },
+    ]
+  }, [metrics])
 
   const statusData = [
-    { name: 'Nuevas', value: alerts.filter((alert) => alert.estado === 'Nueva').length, color: COLORS.blue },
-    { name: 'En seguimiento', value: alerts.filter((alert) => alert.estado === 'En seguimiento').length, color: COLORS.riskMid },
-    { name: 'Revisadas', value: alerts.filter((alert) => alert.estado === 'Revisada').length, color: COLORS.teal },
+    { name: 'Nuevas', value: metrics?.distribucionAlertas.Nueva ?? 0, color: COLORS.blue },
+    { name: 'En seguimiento', value: metrics?.distribucionAlertas['En seguimiento'] ?? 0, color: COLORS.riskMid },
+    { name: 'Revisadas', value: metrics?.distribucionAlertas.Revisada ?? 0, color: COLORS.teal },
   ]
 
+  const visibleAlertTotal = statusData.reduce((sum, item) => sum + item.value, 0)
+
   const summary = [
-    { label: 'Fichas activas', value: activeStudents.length, detail: `${students.length} fichas registradas`, color: COLORS.blue, bg: COLORS.lightBlue },
-    { label: 'Alertas activas', value: activeAlerts.length, detail: `${alerts.length} alertas históricas`, color: COLORS.riskMid, bg: COLORS.riskMidBg },
-    { label: 'Riesgo alto', value: activeStudents.filter((student) => student.nivelRiesgo === 'alto').length, detail: 'Estudiantes activos', color: COLORS.riskHigh, bg: COLORS.riskHighBg },
-    { label: 'Promedio actual', value: average === null ? 'N/D' : average.toFixed(2), detail: `${averages.length} fichas con promedio`, color: COLORS.teal, bg: COLORS.lightTeal },
+    { label: 'Fichas activas', value: metrics?.fichasActivas ?? 0, detail: `${metrics?.totalFichas ?? 0} fichas registradas`, color: COLORS.blue, bg: COLORS.lightBlue },
+    { label: 'Alertas activas', value: metrics?.alertasActivas ?? 0, detail: `${metrics?.alertasHistoricas ?? 0} alertas históricas`, color: COLORS.riskMid, bg: COLORS.riskMidBg },
+    { label: 'Riesgo alto', value: metrics?.distribucionRiesgo.alto ?? 0, detail: 'Estudiantes activos', color: COLORS.riskHigh, bg: COLORS.riskHighBg },
+    { label: 'Promedio actual', value: metrics?.promedioActual == null ? 'N/D' : metrics.promedioActual.toFixed(2), detail: `${metrics?.fichasConPromedio ?? 0} fichas activas con promedio`, color: COLORS.teal, bg: COLORS.lightTeal },
   ]
 
   return (
@@ -81,8 +87,14 @@ export default function Analitica() {
         <BottomNav role={currentRole} />
         <div className="ea-screen-main">
           <div className="ea-screen-header" style={{ background: '#FFFFFF', padding: '18px 22px 15px', borderBottom: `1px solid ${COLORS.border}` }}>
-            <h1 style={{ fontSize: 23, fontWeight: 700, color: COLORS.navy, margin: 0 }}>Analítica educativa</h1>
-            <p style={{ fontSize: 12, color: COLORS.muted, margin: '5px 0 0' }}>Indicadores calculados desde registros persistidos</p>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <h1 style={{ fontSize: 23, fontWeight: 700, color: COLORS.navy, margin: 0 }}>Analítica educativa</h1>
+                <p style={{ fontSize: 12, color: COLORS.muted, margin: '5px 0 0' }}>Indicadores calculados desde registros persistidos</p>
+              </div>
+              {(currentRole === 'administrador' || currentRole === 'docente') && <button type="button" onClick={() => navigate('/app/resultados-academicos')} style={{ border: 'none', borderRadius: 10, padding: '10px 12px', background: COLORS.blue, color: '#FFFFFF', fontSize: 12, fontWeight: 650, cursor: 'pointer' }}>Gestionar resultados</button>}
+              <button type="button" onClick={() => navigate('/app/prediccion-riesgo')} style={{ border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '10px 12px', background: '#FFFFFF', color: COLORS.navy, fontSize: 12, fontWeight: 650, cursor: 'pointer' }}>Probar IA experimental</button>
+            </div>
           </div>
 
           <div className="ea-screen-content no-scrollbar" style={{ padding: '20px 22px 28px' }}>
@@ -105,16 +117,16 @@ export default function Analitica() {
 
               <section style={{ background: '#FFFFFF', border: `1px solid ${COLORS.border}`, borderRadius: 16, padding: 16 }}>
                 <h2 style={{ fontSize: 15, color: COLORS.navy, margin: '0 0 4px' }}>Estado de alertas</h2>
-                <p style={{ fontSize: 11, color: COLORS.subtle, margin: '0 0 16px' }}>Distribución de todas las alertas guardadas</p>
+                <p style={{ fontSize: 11, color: COLORS.subtle, margin: '0 0 16px' }}>Distribución de alertas no archivadas</p>
                 {statusData.map((item) => {
-                  const percent = alerts.length ? item.value / alerts.length * 100 : 0
+                  const percent = visibleAlertTotal ? item.value / visibleAlertTotal * 100 : 0
                   return <div key={item.name} style={{ marginBottom: 14 }}><div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 5 }}><span style={{ fontSize: 12, color: '#475569' }}>{item.name}</span><strong style={{ fontSize: 12, color: COLORS.navy }}>{item.value}</strong></div><div style={{ height: 7, borderRadius: 10, background: '#F1F5F9', overflow: 'hidden' }}><div style={{ width: `${percent}%`, height: '100%', background: item.color }} /></div></div>
                 })}
               </section>
             </div>
 
             <div style={{ marginTop: 16, padding: 13, borderRadius: 12, background: '#F8FAFC', border: `1px solid ${COLORS.border}` }}>
-              <p style={{ margin: 0, color: COLORS.muted, fontSize: 11, lineHeight: 1.55 }}>Nota metodológica: estos indicadores resumen los registros que existen actualmente en PostgreSQL. El promedio es el valor vigente registrado por estudiante; todavía no representa un historial detallado de calificaciones por asignatura. El riesgo manual no debe interpretarse como predicción automática. La asistencia y la orientación vocacional se integrarán a SQL en una etapa posterior.</p>
+              <p style={{ margin: 0, color: COLORS.muted, fontSize: 11, lineHeight: 1.55 }}>Nota metodológica: estos indicadores se calculan en PostgreSQL con consultas agregadas. El promedio es el valor vigente registrado por estudiante; todavía no representa un historial detallado de calificaciones por asignatura. El riesgo manual no debe interpretarse como predicción automática. La asistencia y la orientación vocacional se integrarán a SQL en una etapa posterior.</p>
             </div>
           </div>
         </div>
@@ -122,3 +134,6 @@ export default function Analitica() {
     </PhoneCenter>
   )
 }
+
+
+
